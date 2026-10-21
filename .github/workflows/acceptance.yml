@@ -1,0 +1,113 @@
+name: Acceptance
+
+# The provider against a real Hyperlite: its backend, from the given branch of the Hyperlite repository, on this
+# runner's libvirt and KVM (as Hyperlite's own end-to-end jobs run it), driven by a real terraform and a real tofu.
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      hyperlite_ref:
+        description: "Branch or tag of Hyperlite to test against"
+        default: "claude/integration"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    name: ${{ matrix.tool }} against Hyperlite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: terraform
+            version: "1.13.4"
+          - tool: tofu
+            version: "1.10.6"
+    env:
+      HYPERLITE_REF: ${{ inputs.hyperlite_ref || 'claude/integration' }}
+      E2E_PORT: "8011"
+      E2E_ADMIN_PASSWORD: Acceptance-Quartz-Harbor-2026
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Hyperlite-hv/Hyperlite
+          ref: ${{ env.HYPERLITE_REF }}
+          path: hyperlite
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - if: matrix.tool == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ matrix.version }}
+          terraform_wrapper: false
+      - if: matrix.tool == 'tofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ matrix.version }}
+          tofu_wrapper: false
+      - name: Install libvirt and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvirt-dev pkg-config gcc openssl \
+            libvirt-daemon-system qemu-system-x86 qemu-utils genisoimage wget dnsmasq-base cloud-image-utils ovmf
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+          sudo systemctl start libvirtd
+          cat > /tmp/isolated.xml <<'XML'
+          <network><name>hyperlite-isolated</name><bridge name="virbr-e2e"/><ip address="192.168.199.1" netmask="255.255.255.0"><dhcp><range start="192.168.199.10" end="192.168.199.100"/></dhcp></ip></network>
+          XML
+          sudo virsh net-define /tmp/isolated.xml
+          sudo virsh net-start hyperlite-isolated
+      - name: Start Hyperlite
+        working-directory: hyperlite
+        run: |
+          python -m venv venv
+          venv/bin/pip install -q -r requirements.txt
+          sudo venv/bin/python -c "from app.core.vm_builder import ensure_base_image; print(ensure_base_image())"
+          sudo -E env "PATH=$PATH" bash dashboard/e2e/start-backend.sh > /tmp/hyperlite.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS "http://127.0.0.1:$E2E_PORT/health" && break; sleep 2; done
+          curl -fsS "http://127.0.0.1:$E2E_PORT/health"
+      - name: An API token
+        run: |
+          session=$(curl -fsS -X POST "http://127.0.0.1:$E2E_PORT/api/v1/auth/login" \
+            --data-urlencode username=admin --data-urlencode "password=$E2E_ADMIN_PASSWORD" | jq -r .access_token)
+          token=$(curl -fsS -X POST "http://127.0.0.1:$E2E_PORT/api/v1/auth/tokens" -H "Authorization: Bearer $session" \
+            -H 'Content-Type: application/json' -d '{"name": "acceptance", "expires_days": 1}' | jq -r .token)
+          test -n "$token" && test "$token" != null
+          echo "::add-mask::$token"
+          echo "HYPERLITE_TOKEN=$token" >> "$GITHUB_ENV"
+      - name: Acceptance tests
+        env:
+          TOOL: ${{ matrix.tool }}
+          TF_ACC: "1"
+          HYPERLITE_SERVER: http://127.0.0.1:8011
+        run: |
+          export TF_ACC_TERRAFORM_PATH="$(command -v "$TOOL")"
+          if [ "$TOOL" = tofu ]; then export TF_ACC_PROVIDER_HOST=registry.opentofu.org; fi
+          set +e
+          go test -count=1 -timeout 50m -json ./... > /tmp/test.json
+          status=$?
+          set -e
+          python3 scripts/annotate-failures.py /tmp/test.json || true
+          grep -h '"Action":"\(pass\|fail\)"' /tmp/test.json | jq -r 'select(.Test) | "\(.Action) \(.Test) \(.Elapsed)s"' || true
+          exit $status
+      - name: Hyperlite's log on failure
+        if: failure()
+        run: |
+          tail -c 6000 /tmp/hyperlite.log | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\n','%0A'); print('::error title=hyperlite log::'+t)"
+          sudo virsh list --all || true
