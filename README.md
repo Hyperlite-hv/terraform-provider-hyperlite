@@ -38,6 +38,10 @@ go test ./...   # drives the terraform (or TF_ACC_TERRAFORM_PATH) found on the P
 The HTTP client is Hyperlite's own Go package, `github.com/Hyperlite-hv/Hyperlite/cli/hyperlite`, which
 `hyperlite-cli` is built on too.
 
+## License
+
+Mozilla Public License 2.0 ([LICENSE](LICENSE)), as most Terraform providers. The Go library it uses, Hyperlite's `cli/`, is under the same license.
+
 ## Release
 
 A tag `vX.Y.Z` runs `.github/workflows/release.yml`: GoReleaser builds the archives, signs the checksums with the
