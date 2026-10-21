@@ -3,8 +3,10 @@ module github.com/Hyperlite-hv/terraform-provider-hyperlite
 go 1.25.8
 
 require (
-	github.com/Hyperlite-hv/Hyperlite/cli v0.0.0-20261021205031-89af3d662e99
+	github.com/Hyperlite-hv/Hyperlite/cli v0.0.0-20261021214349-c3dd942a2eac
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
+	github.com/hashicorp/terraform-plugin-framework-timeouts v0.7.0
+	github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 )
