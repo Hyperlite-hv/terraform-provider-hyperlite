@@ -156,7 +156,9 @@ func connect(ctx context.Context, c *hyperlite.Client) (*Client, error) {
 }
 
 func (p *hyperliteProvider) Resources(_ context.Context) []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		newVMResource,
+	}
 }
 
 func (p *hyperliteProvider) DataSources(_ context.Context) []func() datasource.DataSource {
