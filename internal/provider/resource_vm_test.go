@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -251,4 +252,74 @@ func TestVMConfigurationsThatCannotWorkAreRefusedAtPlan(t *testing.T) {
 			})
 		})
 	}
+}
+
+// A template is made from a stopped VM, kept by default (a copy), renamed in place and imported; `keep_vm = false`
+// converts the VM, which is then gone.
+func TestTemplateFromAVMIsCopiedRenamedAndImported(t *testing.T) {
+	f, srv := newFakeHyperlite(t)
+	f.newVM("base", 2, 2048, []float64{10}, "default", "default", true).State = "active" // stopped for the copy
+	f.newVM("old", 1, 1024, []float64{5}, "default", "default", true)
+	config := func(name string) string {
+		return providerBlock(srv.URL, "hlt_ok") + `
+resource "hyperlite_template" "t" {
+  name = "` + name + `"
+  vm   = "base"
+}
+
+resource "hyperlite_template" "converted" {
+  name    = "old-tpl"
+  vm      = "old"
+  keep_vm = false
+}`
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("debian-base"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_template.t", "id", "debian-base"),
+					resource.TestCheckResourceAttr("hyperlite_template.t", "keep_vm", "true"),
+					resource.TestCheckResourceAttr("hyperlite_template.t", "memory_mb", "2048"),
+					resource.TestCheckResourceAttr("hyperlite_template.t", "os", "Debian 12"),
+					func(*terraform.State) error {
+						if f.vms["base"] == nil || f.vms["old"] != nil {
+							return fmt.Errorf("a copy keeps its VM, a conversion does not")
+						}
+						if f.vms["base"].State != "active" || f.called("POST /vms/base/stop") == 0 {
+							return fmt.Errorf("the running VM is stopped for the copy and started again, not %s", f.vms["base"].State)
+						}
+						if f.called("POST /templates/from-vm/base?wait=false") != 1 {
+							return fmt.Errorf("the template is made as a task")
+						}
+						return nil
+					},
+				),
+			},
+			{Config: config("debian-base"), PlanOnly: true},
+			{
+				Config: config("debian-gold"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_template.t", "id", "debian-gold"),
+					func(*terraform.State) error {
+						if f.called("POST /templates/from-vm/") != 2 {
+							return fmt.Errorf("a new name renames the template, it does not make another")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: strings.Replace(config("debian-gold"), `vm   = "base"`, "vm   = \"base\"\n  force_stop = false", 1),
+				Check: func(*terraform.State) error {
+					if f.called("POST /templates/debian-gold/rename") != 0 {
+						return fmt.Errorf("a change of the provider's own settings renames nothing")
+					}
+					return nil
+				},
+			},
+			{ResourceName: "hyperlite_template.t", ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"force_stop"}},
+		},
+	})
 }

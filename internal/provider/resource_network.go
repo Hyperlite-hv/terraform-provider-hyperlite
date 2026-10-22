@@ -58,7 +58,7 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	resp.Schema = schema.Schema{
 		Description: "A virtual network of the node: NAT or isolated with Hyperlite's DHCP, or a bridge onto a host bridge.",
 		Attributes: map[string]schema.Attribute{
-			"id":   schema.StringAttribute{Computed: true, PlanModifiers: keep, Description: "The network's name."},
+			"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The network's name."},
 			"name": schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)}, Description: "Its name. A change renames it."},
 			"mode": schema.StringAttribute{
 				Required: true, Validators: []validator.String{stringvalidator.OneOf("nat", "isolated", "bridge")},
@@ -115,6 +115,11 @@ func (r *networkResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 	if (plan.Mode.ValueString() == "bridge") != (state.Mode.ValueString() == "bridge") {
 		resp.RequiresReplace = append(resp.RequiresReplace, path.Root("mode"))
+	}
+	// The server's own rule (app/routers/network.py): Hyperlite relies on the names of its system networks.
+	if old := state.Name.ValueString(); (old == "default" || old == "hyperlite-isolated") && !plan.Name.Equal(state.Name) {
+		resp.Diagnostics.AddAttributeError(path.Root("name"), "A system network keeps its name",
+			fmt.Sprintf("Hyperlite relies on the name of its network %q: it cannot be renamed.", old))
 	}
 }
 

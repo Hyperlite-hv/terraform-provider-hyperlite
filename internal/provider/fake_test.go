@@ -43,7 +43,8 @@ type fakeHyperliteAPI struct {
 	calls   []string
 	seq     int
 	tasks   map[string]bool
-	jobs    map[int64]map[string]any // grouped backup jobs
+	jobs    map[int64]map[string]any  // grouped backup jobs
+	tpls    map[string]map[string]any // templates, by name
 }
 
 // fakeBackupDir is the node's default backup directory, which the real server reports when none is set.
@@ -59,7 +60,7 @@ func backupDir(body map[string]any) map[string]any {
 }
 
 func newFakeHyperlite(t *testing.T) (*fakeHyperliteAPI, *httptest.Server) {
-	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}}
+	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}, tpls: map[string]map[string]any{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -164,6 +165,45 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 			f.pools[int64(rp)] = append(f.pools[int64(rp)], vm.Name)
 		}
 		reply(w, 202, merge(f.task(), map[string]any{"name": vm.Name}))
+	case p == "/templates" && r.Method == "GET":
+		items := []any{}
+		for _, t := range f.tpls {
+			items = append(items, t)
+		}
+		reply(w, 200, map[string]any{"items": items, "total": len(items)})
+	case len(seg) == 3 && seg[0] == "templates" && seg[1] == "from-vm":
+		vm := get(seg[2])
+		if vm == nil {
+			return
+		}
+		if vm.State != "stopped" {
+			fail(409, "Stop the VM before making a template of it")
+			return
+		}
+		name := body["template_name"].(string)
+		f.tpls[name] = map[string]any{"name": name, "vcpu": vm.VCPU, "memory_mb": vm.MemoryMB, "vm_source": vm.Name,
+			"ssh_user": "debian", "os_label": "Debian 12", "created_at": "2026-10-22T08:00:00"}
+		if keep, _ := body["keep_vm"].(bool); !keep {
+			delete(f.vms, vm.Name)
+		}
+		reply(w, 202, merge(f.task(), map[string]any{"name": name}))
+	case len(seg) == 3 && seg[0] == "templates" && seg[2] == "rename":
+		t := f.tpls[seg[1]]
+		if t == nil {
+			reply(w, 404, map[string]any{"detail": "Template not found", "code": "not_found"})
+			return
+		}
+		delete(f.tpls, seg[1])
+		t["name"] = body["new_name"]
+		f.tpls[body["new_name"].(string)] = t
+		reply(w, 200, t)
+	case len(seg) == 2 && seg[0] == "templates" && r.Method == "DELETE":
+		if r.URL.Query().Get("confirm") != "true" {
+			fail(400, "Confirmation required (?confirm=true)")
+			return
+		}
+		delete(f.tpls, seg[1])
+		reply(w, 200, map[string]any{"template": seg[1], "deleted": true})
 	case len(seg) == 3 && seg[0] == "templates" && seg[2] == "deploy":
 		vm := f.newVM(body["new_name"].(string), 2, 2048, []float64{10}, body["network"].(string), "default", true)
 		vm.CloudInit["user"] = "debian"
