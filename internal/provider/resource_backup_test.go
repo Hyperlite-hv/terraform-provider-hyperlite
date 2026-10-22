@@ -76,6 +76,18 @@ resource "hyperlite_backup_job" "j" {
       addresses = ["10.0.20.11/24"]
       gateway   = "10.0.30.1"
     }`)
+	cases["a MAC address"] = `resource "hyperlite_network_reservation" "r" {
+  network = "lab"
+  mac     = "52-54-00-12-34-56"
+  ip      = "10.0.20.50"
+}`
+	cases["An IPv4 address is expected"] = `resource "hyperlite_network" "n" {
+  name       = "lab"
+  mode       = "nat"
+  address    = "10.0.20.1"
+  dhcp_start = "10.0.20.100"
+  dhcp_end   = "fd00::1"
+}`
 	for want, body := range cases {
 		t.Run(want, func(t *testing.T) {
 			resource.UnitTest(t, resource.TestCase{

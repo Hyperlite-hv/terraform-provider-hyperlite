@@ -68,10 +68,10 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 				Description: "For `bridge`: the host bridge (`br0`).",
 			},
-			"address":    schema.StringAttribute{Optional: true, Description: "For `nat` and `isolated`: the gateway's address (`10.0.20.1`)."},
-			"netmask":    schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: keep, Description: "Its netmask (`255.255.255.0` when absent)."},
-			"dhcp_start": schema.StringAttribute{Optional: true, Description: "First address Hyperlite's DHCP hands out (with `dhcp_end`; none: no DHCP)."},
-			"dhcp_end":   schema.StringAttribute{Optional: true, Description: "Last address of the DHCP range."},
+			"address":    schema.StringAttribute{Optional: true, Validators: []validator.String{ipv4Address()}, Description: "For `nat` and `isolated`: the gateway's address (`10.0.20.1`)."},
+			"netmask":    schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: keep, Validators: []validator.String{ipv4Address()}, Description: "Its netmask (`255.255.255.0` when absent)."},
+			"dhcp_start": schema.StringAttribute{Optional: true, Validators: []validator.String{ipv4Address()}, Description: "First address Hyperlite's DHCP hands out (with `dhcp_end`; none: no DHCP)."},
+			"dhcp_end":   schema.StringAttribute{Optional: true, Validators: []validator.String{ipv4Address()}, Description: "Last address of the DHCP range."},
 			"autostart": schema.BoolAttribute{
 				Optional: true, Computed: true, Default: booldefault.StaticBool(true),
 				Description: "Started with the node.",
@@ -312,9 +312,9 @@ func (r *reservationResource) Schema(_ context.Context, _ resource.SchemaRequest
 		Attributes: map[string]schema.Attribute{
 			"id":      schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, Description: "`<network>/<mac>`."},
 			"network": schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The network."},
-			"mac":     schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The MAC address (a `hyperlite_vm`'s `network_interface.N.mac`)."},
-			"ip":      schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The address it gets."},
-			"name":    schema.StringAttribute{Optional: true, PlanModifiers: replace, Description: "A host name given with it."},
+			"mac":     schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.RegexMatches(macRe, "a MAC address: 52:54:00:12:34:56")}, Description: "The MAC address (a `hyperlite_vm`'s `network_interface.N.mac`)."},
+			"ip":      schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []validator.String{ipv4Address()}, Description: "The address it gets."},
+			"name":    schema.StringAttribute{Optional: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.RegexMatches(reservationNameRe, "letters, digits and dashes, 63 characters at most")}, Description: "A host name given with it."},
 		},
 	}
 }
