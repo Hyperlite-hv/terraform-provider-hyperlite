@@ -52,7 +52,7 @@ func (r *storagePoolResource) Schema(_ context.Context, _ resource.SchemaRequest
 	resp.Schema = schema.Schema{
 		Description: "A storage pool of the node the provider talks to: a directory, an NFS export, a ZFS pool or an iSCSI target. Its name changes in place; anything else replaces it.",
 		Attributes: map[string]schema.Attribute{
-			"id":   schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "The pool's name."},
+			"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The pool's name."},
 			"name": schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)}, Description: "Its name. A change renames it."},
 			"type": schema.StringAttribute{
 				Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.OneOf("dir", "netfs", "zfs", "iscsi")},
@@ -173,6 +173,24 @@ func (r *storagePoolResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+// ModifyPlan refuses at plan the renames the server refuses (app/routers/storage.py): Hyperlite relies on the
+// `default` pool's name.
+func (r *storagePoolResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan, state storagePoolModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() || plan.Name.IsUnknown() || plan.Name.Equal(state.Name) {
+		return
+	}
+	if state.Name.ValueString() == "default" || plan.Name.ValueString() == "default" {
+		resp.Diagnostics.AddAttributeError(path.Root("name"), "The default pool keeps its name",
+			"Hyperlite relies on the `default` pool's name: it is neither renamed nor given to another pool.")
+	}
 }
 
 func (r *storagePoolResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {

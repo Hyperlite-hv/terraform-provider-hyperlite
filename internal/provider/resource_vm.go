@@ -519,57 +519,20 @@ func (r *vmResource) configure(ctx context.Context, plan, prior *vmModel, fresh 
 	return nil
 }
 
-// stopped runs fn with the VM stopped, then starts it again if it was running: the rule of vSphere's
-// shutdown_wait_timeout and force_power_off.
+// stopped runs fn with the VM stopped, then starts it again if it was running.
 func (r *vmResource) stopped(ctx context.Context, m *vmModel, fn func() error) error {
-	c := r.client
 	name := m.Name.ValueString()
-	vm, err := c.vmByName(ctx, name, "")
-	if err != nil {
-		return err
-	}
-	running := vm.State != "stopped"
-	if running {
-		if err := c.stopVM(ctx, name, duration(m.ShutdownTimeout, 3*time.Minute), m.ForceStop.ValueBool()); err != nil {
-			return err
-		}
-	}
-	if err := fn(); err != nil {
-		if running {
-			_ = c.startVM(ctx, name) // put it back as it was; the error that matters is fn's
-		}
-		return err
-	}
-	if running {
-		return c.startVM(ctx, name)
-	}
-	return nil
+	return r.client.whileStopped(ctx, name, duration(m.ShutdownTimeout, 3*time.Minute), m.ForceStop.ValueBool(), func() (string, error) {
+		return name, fn()
+	})
 }
 
 // rename stops the VM (Hyperlite renames a stopped VM), renames it, and starts it again under its new name if it ran.
 func (r *vmResource) rename(ctx context.Context, state *vmModel, to string) error {
-	c := r.client
 	from := state.Name.ValueString()
-	vm, err := c.vmByName(ctx, from, "")
-	if err != nil {
-		return err
-	}
-	running := vm.State != "stopped"
-	if running {
-		if err := c.stopVM(ctx, from, duration(state.ShutdownTimeout, 3*time.Minute), state.ForceStop.ValueBool()); err != nil {
-			return err
-		}
-	}
-	if err := c.API.Call(ctx, "POST", "/vms/"+esc(from)+"/rename", map[string]any{"new_name": to}, nil); err != nil {
-		if running {
-			_ = c.startVM(ctx, from) // put it back as it was; the error that matters is the rename's
-		}
-		return err
-	}
-	if running {
-		return c.startVM(ctx, to)
-	}
-	return nil
+	return r.client.whileStopped(ctx, from, duration(state.ShutdownTimeout, 3*time.Minute), state.ForceStop.ValueBool(), func() (string, error) {
+		return to, r.client.API.Call(ctx, "POST", "/vms/"+esc(from)+"/rename", map[string]any{"new_name": to}, nil)
+	})
 }
 
 // tryLive runs fn, and again with the VM stopped when Hyperlite answers that it must be (409).

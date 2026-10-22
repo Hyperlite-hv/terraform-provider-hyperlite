@@ -263,6 +263,33 @@ func (c *Client) stopVM(ctx context.Context, name string, grace time.Duration, f
 	return c.waitState(ctx, name, "stopped", time.Minute)
 }
 
+// whileStopped runs fn with the VM stopped, then starts it again if it was running, under the name fn leaves it with
+// (a rename): the rule of vSphere's shutdown_wait_timeout and force_power_off. When fn fails, the VM is started
+// again as it was; the error that matters is fn's.
+func (c *Client) whileStopped(ctx context.Context, name string, grace time.Duration, force bool, fn func() (string, error)) error {
+	vm, err := c.vmByName(ctx, name, "")
+	if err != nil {
+		return err
+	}
+	running := vm.State != "stopped"
+	if running {
+		if err := c.stopVM(ctx, name, grace, force); err != nil {
+			return err
+		}
+	}
+	after, err := fn()
+	if err != nil {
+		if running {
+			_ = c.startVM(ctx, name)
+		}
+		return err
+	}
+	if running && after != "" {
+		return c.startVM(ctx, after)
+	}
+	return nil
+}
+
 func (c *Client) waitState(ctx context.Context, name, state string, within time.Duration) error {
 	deadline := time.Now().Add(within)
 	for {

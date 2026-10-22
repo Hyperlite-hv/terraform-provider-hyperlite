@@ -196,6 +196,15 @@ func TestAccNetwork(t *testing.T) {
 				Check:  resource.TestCheckResourceAttr("hyperlite_network.acc", "dhcp_end", "10.123.0.150"),
 			},
 			{
+				Config: accNetwork("tfacc-net2", "10.123.0.150"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_network.acc", "id", "tfacc-net2"),
+					resource.TestCheckResourceAttr("hyperlite_network_reservation.acc", "id", "tfacc-net2/52:54:00:12:34:56"),
+				),
+			},
+			{Config: accNetwork("tfacc-net2", "10.123.0.150"), PlanOnly: true},
+			{Config: accNetwork("tfacc-net", "10.123.0.150")},
+			{
 				ResourceName:      "hyperlite_network.acc",
 				ImportState:       true,
 				ImportStateId:     "tfacc-net",
@@ -341,6 +350,12 @@ func TestAccStorage(t *testing.T) {
 					resource.TestCheckResourceAttrSet("data.hyperlite_storage_pool.dir", "uuid"),
 				),
 			},
+			{
+				Config: strings.Replace(accStorage, `name = "tfacc-dir"`, `name = "tfacc-dir2"`, 1),
+				Check:  resource.TestCheckResourceAttr("hyperlite_storage_pool.dir", "id", "tfacc-dir2"),
+			},
+			{Config: strings.Replace(accStorage, `name = "tfacc-dir"`, `name = "tfacc-dir2"`, 1), PlanOnly: true},
+			{Config: accStorage},
 			{ResourceName: "hyperlite_storage_pool.dir", ImportState: true, ImportStateVerify: true},
 			{ResourceName: "hyperlite_storage_volume.data", ImportState: true, ImportStateVerify: true},
 		},
@@ -429,6 +444,84 @@ func TestAccBackup(t *testing.T) {
 				Config:      accBackup("3", `resource "hyperlite_vm_ha" "small" { vm = hyperlite_vm.small.name }`),
 				ExpectError: regexp.MustCompile(`not on a shared\s+storage\s+pool`),
 			},
+		},
+	})
+}
+
+func accTemplate(name string) string {
+	return accProvider + `
+resource "hyperlite_vm" "src" {
+  name        = "tfacc-tplsrc"
+  vcpu        = 1
+  memory_mb   = 512
+  wait_for_ip = "0s"
+
+  cloud_init {
+    user     = "tfacc"
+    password = "Tfacc-pass-2026"
+  }
+
+  disk { size_gb = 3 }
+  network_interface { network = "hyperlite-isolated" }
+}
+
+resource "hyperlite_template" "t" {
+  name = "` + name + `"
+  vm   = hyperlite_vm.src.name
+}
+
+data "hyperlite_template" "t" {
+  name       = hyperlite_template.t.name
+  depends_on = [hyperlite_template.t]
+}
+`
+}
+
+// TestAccTemplate: a template copied from a running VM (stopped for the copy, started again), read by the data
+// source, renamed, imported and deleted, on a real Hyperlite.
+func TestAccTemplate(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		CheckDestroy: func(s *terraform.State) error {
+			if err := accGone("tfacc-tplsrc")(s); err != nil {
+				return err
+			}
+			for _, n := range []string{"tfacc-tpl", "tfacc-tpl2"} {
+				if _, err := (&templateResource{configured{client: accClient()}}).template(context.Background(), n); !errors.Is(err, errNotFound) {
+					return fmt.Errorf("the template %s is still there after the destroy (%v)", n, err)
+				}
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: accTemplate("tfacc-tpl"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_template.t", "id", "tfacc-tpl"),
+					resource.TestCheckResourceAttr("hyperlite_template.t", "keep_vm", "true"),
+					resource.TestCheckResourceAttr("hyperlite_template.t", "vcpu", "1"),
+					resource.TestCheckResourceAttr("hyperlite_template.t", "memory_mb", "512"),
+					resource.TestCheckResourceAttr("data.hyperlite_template.t", "vm_source", "tfacc-tplsrc"),
+					func(*terraform.State) error {
+						vm, err := accClient().vmByName(context.Background(), "tfacc-tplsrc", "")
+						if err != nil {
+							return err
+						}
+						if vm.State != "active" {
+							return fmt.Errorf("the source VM is %s after the copy, not started again", vm.State)
+						}
+						return nil
+					},
+				),
+			},
+			{Config: accTemplate("tfacc-tpl"), PlanOnly: true},
+			{
+				Config: accTemplate("tfacc-tpl2"),
+				Check:  resource.TestCheckResourceAttr("hyperlite_template.t", "id", "tfacc-tpl2"),
+			},
+			{Config: accTemplate("tfacc-tpl2"), PlanOnly: true},
+			{ResourceName: "hyperlite_template.t", ImportState: true, ImportStateVerify: true},
 		},
 	})
 }
