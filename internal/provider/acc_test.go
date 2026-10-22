@@ -282,3 +282,38 @@ func TestAccAccess(t *testing.T) {
 		},
 	})
 }
+
+const accStorage = accProvider + `
+resource "hyperlite_storage_pool" "dir" {
+  name = "tfacc-dir"
+  type = "dir"
+  path = "/var/lib/libvirt/tfacc-dir"
+}
+
+resource "hyperlite_storage_volume" "data" {
+  storage_pool = hyperlite_storage_pool.dir.name
+  name         = "tfacc-data"
+  size_gb      = 1
+}
+`
+
+// TestAccStorage: a directory pool and a volume on it, imported and destroyed, on a real Hyperlite.
+func TestAccStorage(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			{
+				Config: accStorage,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_storage_pool.dir", "state", "running"),
+					resource.TestCheckResourceAttr("hyperlite_storage_volume.data", "volume", "tfacc-data.qcow2"),
+					resource.TestCheckResourceAttr("hyperlite_storage_volume.data", "size_gb", "1"),
+				),
+			},
+			{Config: accStorage, PlanOnly: true},
+			{ResourceName: "hyperlite_storage_pool.dir", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_storage_volume.data", ImportState: true, ImportStateVerify: true},
+		},
+	})
+}
