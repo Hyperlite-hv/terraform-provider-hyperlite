@@ -45,7 +45,11 @@ with `fingerprint`, its SHA-256 as `hyperlite login` shows it.
 ```bash
 go build ./...
 go test ./...   # drives the terraform (or TF_ACC_TERRAFORM_PATH) found on the PATH against a fake Hyperlite
+go generate ./...   # docs/, from the schemas and examples/ (needs terraform on the PATH); CI fails when it is stale
 ```
+
+Each resource and data source has an example in `examples/` (and an `import.sh` for a resource): they are the
+Example Usage of its page in `docs/`, the pages the registries publish.
 
 The HTTP client is Hyperlite's own Go package, `github.com/Hyperlite-hv/Hyperlite/cli/hyperlite`, which
 `hyperlite-cli` is built on too.

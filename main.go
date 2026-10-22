@@ -1,4 +1,8 @@
 // The official Terraform / OpenTofu provider for Hyperlite.
+//
+// The documentation in docs/ is generated from the schemas and examples/ by `go generate ./...`.
+//
+//go:generate go tool tfplugindocs generate --provider-name hyperlite --rendered-provider-name Hyperlite
 package main
 
 import (
