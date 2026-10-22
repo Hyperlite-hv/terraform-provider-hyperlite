@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -205,6 +207,78 @@ func TestAccNetwork(t *testing.T) {
 				ImportStateId:     "tfacc-net/52:54:00:12:34:56",
 				ImportStateVerify: true,
 			},
+		},
+	})
+}
+
+const accAccess = accProvider + `
+resource "hyperlite_user" "ci" {
+  username = "tfacc-ci"
+  password = "Tfacc-Ci-Harbor-2026"
+}
+
+resource "hyperlite_group" "ops" {
+  name    = "tfacc-ops"
+  members = [hyperlite_user.ci.username]
+}
+
+resource "hyperlite_role" "tf" {
+  name       = "tfacc-terraform"
+  privileges = ["vm.allocate", "vm.power", "vm.hardware", "storage.allocate", "network.assign"]
+}
+
+resource "hyperlite_resource_pool" "web" {
+  name        = "tfacc-web"
+  description = "VMs of the acceptance tests"
+}
+
+resource "hyperlite_acl" "on_pool" {
+  subject_type  = "group"
+  subject       = hyperlite_group.ops.id
+  role          = hyperlite_role.tf.key
+  resource_type = "pool"
+  resource      = hyperlite_resource_pool.web.id
+}
+
+resource "hyperlite_acl" "on_storage" {
+  subject_type  = "user"
+  subject       = hyperlite_user.ci.username
+  role          = hyperlite_role.tf.key
+  resource_type = "storage"
+  resource      = "default"
+}
+`
+
+// TestAccAccess: an account, a group with it, a custom role, a pool and two assignments, changed and imported, on a
+// real Hyperlite.
+func TestAccAccess(t *testing.T) {
+	changed := strings.Replace(strings.Replace(accAccess, `"network.assign"]`, `"network.assign", "vm.options"]`, 1), `acceptance tests"`, `acceptance tests, changed"`, 1)
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			{
+				Config: accAccess,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_user.ci", "role", "viewer"),
+					resource.TestCheckResourceAttr("hyperlite_group.ops", "members.#", "1"),
+					resource.TestMatchResourceAttr("hyperlite_role.tf", "key", regexp.MustCompile(`^custom:\d+$`)),
+					resource.TestCheckResourceAttr("hyperlite_acl.on_storage", "resource_type", "storage"),
+				),
+			},
+			{Config: accAccess, PlanOnly: true},
+			{
+				Config: changed,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_role.tf", "privileges.#", "6"),
+					resource.TestCheckResourceAttr("hyperlite_resource_pool.web", "description", "VMs of the acceptance tests, changed"),
+				),
+			},
+			{ResourceName: "hyperlite_user.ci", ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"password"}},
+			{ResourceName: "hyperlite_group.ops", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_role.tf", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_resource_pool.web", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_acl.on_pool", ImportState: true, ImportStateVerify: true},
 		},
 	})
 }
