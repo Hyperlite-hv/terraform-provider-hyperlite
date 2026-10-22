@@ -504,6 +504,8 @@ func TestAccTemplate(t *testing.T) {
 					resource.TestCheckResourceAttr("hyperlite_template.t", "vcpu", "1"),
 					resource.TestCheckResourceAttr("hyperlite_template.t", "memory_mb", "512"),
 					resource.TestCheckResourceAttr("data.hyperlite_template.t", "vm_source", "tfacc-tplsrc"),
+					resource.TestCheckResourceAttr("data.hyperlite_template.t", "firmware", "bios"),
+					resource.TestCheckResourceAttr("data.hyperlite_template.t", "disks.0.size_gb", "3"),
 					func(*terraform.State) error {
 						vm, err := accClient().vmByName(context.Background(), "tfacc-tplsrc", "")
 						if err != nil {
