@@ -145,3 +145,66 @@ func accGone(names ...string) resource.TestCheckFunc {
 func accClient() *Client {
 	return &Client{API: &hyperlite.Client{URL: os.Getenv("HYPERLITE_SERVER"), Token: os.Getenv("HYPERLITE_TOKEN")}}
 }
+
+func accNetwork(name, dhcpEnd string) string {
+	return accProvider + `
+resource "hyperlite_network" "acc" {
+  name       = "` + name + `"
+  mode       = "nat"
+  address    = "10.123.0.1"
+  dhcp_start = "10.123.0.10"
+  dhcp_end   = "` + dhcpEnd + `"
+}
+
+resource "hyperlite_network_reservation" "acc" {
+  network = hyperlite_network.acc.name
+  mac     = "52:54:00:12:34:56"
+  ip      = "10.123.0.5"
+  name    = "tfacc-host"
+}
+`
+}
+
+// TestAccNetwork: a NAT network made, its DHCP range changed in place, renamed, a reservation on it, imported and
+// destroyed, on a real Hyperlite.
+func TestAccNetwork(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		CheckDestroy: func(*terraform.State) error {
+			for _, n := range []string{"tfacc-net", "tfacc-net2"} {
+				if _, err := accClient().network(context.Background(), n); !errors.Is(err, errNotFound) {
+					return fmt.Errorf("the network %s is still there after the destroy (%v)", n, err)
+				}
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: accNetwork("tfacc-net", "10.123.0.100"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_network.acc", "active", "true"),
+					resource.TestCheckResourceAttr("hyperlite_network.acc", "netmask", "255.255.255.0"),
+					resource.TestCheckResourceAttr("hyperlite_network_reservation.acc", "ip", "10.123.0.5"),
+				),
+			},
+			{Config: accNetwork("tfacc-net", "10.123.0.100"), PlanOnly: true},
+			{
+				Config: accNetwork("tfacc-net", "10.123.0.150"),
+				Check:  resource.TestCheckResourceAttr("hyperlite_network.acc", "dhcp_end", "10.123.0.150"),
+			},
+			{
+				ResourceName:      "hyperlite_network.acc",
+				ImportState:       true,
+				ImportStateId:     "tfacc-net",
+				ImportStateVerify: true,
+			},
+			{
+				ResourceName:      "hyperlite_network_reservation.acc",
+				ImportState:       true,
+				ImportStateId:     "tfacc-net/52:54:00:12:34:56",
+				ImportStateVerify: true,
+			},
+		},
+	})
+}

@@ -158,6 +158,8 @@ func connect(ctx context.Context, c *hyperlite.Client) (*Client, error) {
 func (p *hyperliteProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		newVMResource,
+		newNetworkResource,
+		newReservationResource,
 	}
 }
 
