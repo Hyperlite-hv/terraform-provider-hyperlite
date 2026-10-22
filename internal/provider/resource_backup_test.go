@@ -50,6 +50,32 @@ resource "hyperlite_backup_job" "j" {
   network_interface { network = "default" }
 }`,
 	}
+	customized := func(customize string) string {
+		return `resource "hyperlite_vm" "v" {
+  name      = "vm-x"
+  vcpu      = 1
+  memory_mb = 512
+  cloud_init {
+    user     = "ops"
+    password = "Harbor-Lantern-2026"
+  }
+  customize {
+    ` + customize + `
+  }
+  disk { size_gb = 3 }
+  network_interface { network = "default" }
+}`
+	}
+	cases["as a DNS label"] = customized(`hostname = "Web01"`)
+	cases["without a final dot"] = customized(`domain = "example.org."`)
+	cases["Lowercase DNS labels"] = customized(`dns_search = ["Corp.Example"]`)
+	cases["Write it as `2001:db8::1`"] = customized(`dns = ["2001:db8:0::1"]`)
+	cases["An IPv4 or IPv6 address"] = customized(`dns = ["dns.example"]`)
+	cases["with its prefix length"] = customized(`network { addresses = ["10.0.20.11"] }`)
+	cases["Gateway out of reach"] = customized(`network {
+      addresses = ["10.0.20.11/24"]
+      gateway   = "10.0.30.1"
+    }`)
 	for want, body := range cases {
 		t.Run(want, func(t *testing.T) {
 			resource.UnitTest(t, resource.TestCase{
