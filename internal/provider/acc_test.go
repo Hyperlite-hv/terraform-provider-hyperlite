@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -522,6 +523,55 @@ func TestAccTemplate(t *testing.T) {
 			},
 			{Config: accTemplate("tfacc-tpl2"), PlanOnly: true},
 			{ResourceName: "hyperlite_template.t", ImportState: true, ImportStateVerify: true},
+		},
+	})
+}
+
+// TestAccISO: an image uploaded to the library (the server checks its name, not its content), read by the data
+// source, renamed, imported and deleted, on a real Hyperlite.
+func TestAccISO(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "tfacc.iso")
+	if err := os.WriteFile(src, make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := func(name string) string {
+		return accProvider + `
+resource "hyperlite_iso" "i" {
+  name   = "` + name + `"
+  source = "` + src + `"
+}
+
+data "hyperlite_iso" "i" {
+  name       = hyperlite_iso.i.name
+  depends_on = [hyperlite_iso.i]
+}
+`
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		CheckDestroy: func(*terraform.State) error {
+			for _, n := range []string{"tfacc-1.0.iso", "tfacc-1.1.iso"} {
+				if _, err := (&isoResource{configured{client: accClient()}}).iso(context.Background(), n); !errors.Is(err, errNotFound) {
+					return fmt.Errorf("the ISO %s is still there after the destroy (%v)", n, err)
+				}
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: config("tfacc-1.0.iso"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_iso.i", "size_mb", "1"),
+					resource.TestCheckResourceAttrPair("data.hyperlite_iso.i", "added_at", "hyperlite_iso.i", "added_at"),
+				),
+			},
+			{Config: config("tfacc-1.0.iso"), PlanOnly: true},
+			{
+				Config: config("tfacc-1.1.iso"),
+				Check:  resource.TestCheckResourceAttr("hyperlite_iso.i", "id", "tfacc-1.1.iso"),
+			},
+			{ResourceName: "hyperlite_iso.i", ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"source"}},
 		},
 	})
 }

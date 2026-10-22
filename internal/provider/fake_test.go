@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -45,6 +46,7 @@ type fakeHyperliteAPI struct {
 	tasks   map[string]bool
 	jobs    map[int64]map[string]any  // grouped backup jobs
 	tpls    map[string]map[string]any // templates, by name
+	isos    map[string][]byte         // the ISO library: name -> content
 }
 
 // fakeBackupDir is the node's default backup directory, which the real server reports when none is set.
@@ -60,7 +62,7 @@ func backupDir(body map[string]any) map[string]any {
 }
 
 func newFakeHyperlite(t *testing.T) (*fakeHyperliteAPI, *httptest.Server) {
-	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}, tpls: map[string]map[string]any{}}
+	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}, tpls: map[string]map[string]any{}, isos: map[string][]byte{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -116,7 +118,9 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/api/v1")
 	f.calls = append(f.calls, r.Method+" "+p+"?"+r.URL.RawQuery)
 	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
 	seg := strings.Split(strings.Trim(p, "/"), "/")
 	fail := func(status int, detail string) {
 		reply(w, status, map[string]any{"detail": detail, "code": "conflict"})
@@ -165,6 +169,32 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 			f.pools[int64(rp)] = append(f.pools[int64(rp)], vm.Name)
 		}
 		reply(w, 202, merge(f.task(), map[string]any{"name": vm.Name}))
+	case p == "/isos" && r.Method == "GET":
+		items := []any{}
+		for name, data := range f.isos {
+			items = append(items, map[string]any{"name": name, "size_mb": float64(len(data)) / (1024 * 1024), "added_at": "2026-10-22T08:00:00+00:00", "node": "local"})
+		}
+		reply(w, 200, map[string]any{"items": items, "total": len(items)})
+	case p == "/isos" && r.Method == "POST":
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			fail(422, "fake: no file part: "+err.Error())
+			return
+		}
+		data, _ := io.ReadAll(file)
+		if f.isos[header.Filename] != nil {
+			fail(409, "An ISO named '"+header.Filename+"' already exists: rename or delete it first")
+			return
+		}
+		f.isos[header.Filename] = data
+		reply(w, 201, map[string]any{"name": header.Filename})
+	case len(seg) == 3 && seg[0] == "isos" && seg[2] == "rename":
+		f.isos[body["new_name"].(string)] = f.isos[seg[1]]
+		delete(f.isos, seg[1])
+		reply(w, 200, map[string]any{"name": body["new_name"], "old": seg[1]})
+	case len(seg) == 2 && seg[0] == "isos" && r.Method == "DELETE":
+		delete(f.isos, seg[1])
+		reply(w, 200, map[string]any{"name": seg[1], "deleted": true})
 	case p == "/templates" && r.Method == "GET":
 		items := []any{}
 		for _, t := range f.tpls {
