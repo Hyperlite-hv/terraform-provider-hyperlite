@@ -16,7 +16,7 @@ gpg --armor --export-secret-keys <KEY_ID> > private.asc
 gpg --armor --export <KEY_ID>                        # the public key, given to the registries below
 ```
 
-In this repository, **Settings > Environments > New environment** named `release`:
+In this repository, **Settings > Environments > New environment** named `Terraform`:
 
 - Deployment branches and tags: tags matching `v*` only.
 - Required reviewers: the maintainers (a release then waits for one of them to approve it).
@@ -39,7 +39,7 @@ Delete `private.asc` once it is stored.
    release needs.
 2. The README says which Hyperlite version it needs.
 3. Tag and push: `git tag v1.0.0 && git push origin v1.0.0`.
-4. Approve the `release` deployment when GitHub asks. The release appears with its archives, `SHA256SUMS` and
+4. Approve the `Terraform` deployment when GitHub asks. The release appears with its archives, `SHA256SUMS` and
    `SHA256SUMS.sig`; both registries list it within an hour.
 
 A version `vX.Y.Z-rc.N` is a pre-release: the registries list it, but a configuration gets it only by naming that exact
