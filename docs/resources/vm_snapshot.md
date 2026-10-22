@@ -31,6 +31,7 @@ resource "hyperlite_vm_snapshot" "before_upgrade" {
 ### Optional
 
 - `description` (String) Its description.
+- `node` (String) The member of the cluster the VM is on (absent: the node the provider talks to). Another member makes it again there.
 
 ### Read-Only
 
@@ -44,5 +45,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By `<vm>/<snapshot>`; the same led by `<node>/` for one on another node of the cluster.
 terraform import hyperlite_vm_snapshot.before_upgrade web-1/before-upgrade
+terraform import hyperlite_vm_snapshot.before_upgrade pve-b/web-1/before-upgrade
 ```

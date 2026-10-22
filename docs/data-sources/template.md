@@ -30,6 +30,10 @@ output "system_disk_gb" {
 
 - `name` (String) The template's name.
 
+### Optional
+
+- `node` (String) The cluster member that holds the template, as on its resource (`local` when absent: the node the provider talks to).
+
 ### Read-Only
 
 - `created_at` (String) When it was made.

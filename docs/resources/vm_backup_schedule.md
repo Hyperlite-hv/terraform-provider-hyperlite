@@ -37,6 +37,7 @@ resource "hyperlite_vm_backup_schedule" "web" {
 - `keep_days` (Number) GFS retention: the last backup of each of the last N days.
 - `keep_months` (Number) GFS retention: the last backup of each of the last N months.
 - `keep_weeks` (Number) GFS retention: the last backup of each of the last N weeks.
+- `node` (String) The member of the cluster the VM is on (absent: the node the provider talks to). Another member makes it again there.
 - `retention_count` (Number) The newest backups kept, besides those a GFS rule keeps.
 - `target_dir` (String) Where the backups go (an absolute path); absent: the node's default directory, which the server reports.
 
@@ -51,5 +52,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By the VM's name; the same led by `<node>/` for one on another node of the cluster.
 terraform import hyperlite_vm_backup_schedule.web web-1
+terraform import hyperlite_vm_backup_schedule.web pve-b/web-1
 ```

@@ -127,7 +127,7 @@ func (d *storagePoolDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 		Description: "A storage pool, to put disks and volumes in it, or to check its free space.",
 		Attributes: map[string]schema.Attribute{
 			"name":          schema.StringAttribute{Required: true, Description: "The pool's name."},
-			"node":          schema.StringAttribute{Optional: true, Description: "The node it is on (`local` when absent)."},
+			"node":          dataNode("pool"),
 			"id":            schema.StringAttribute{Computed: true, Description: "The pool's name."},
 			"uuid":          schema.StringAttribute{Computed: true, Description: "Its libvirt UUID."},
 			"type":          schema.StringAttribute{Computed: true, Description: "`dir`, `netfs`, `iscsi`, `zfs`..."},
@@ -159,7 +159,7 @@ func (d *storagePoolDataSource) Read(ctx context.Context, req datasource.ReadReq
 		AvailableGB  float64 `json:"available_gb"`
 	}
 	name := m.Name.ValueString()
-	err := notFound(d.client.API.Call(ctx, "GET", withNode("/storage/"+esc(name), m.Node.ValueString()), nil, &p))
+	err := notFound(d.client.at(memberOf(m.Node)).call(ctx, "GET", "/storage/"+esc(name), nil, &p))
 	if errors.Is(err, errNotFound) {
 		resp.Diagnostics.AddError(noSuch("storage pool", name))
 		return
@@ -168,6 +168,7 @@ func (d *storagePoolDataSource) Read(ctx context.Context, req datasource.ReadReq
 		resp.Diagnostics.AddError("Cannot read the storage pool", err.Error())
 		return
 	}
+	m.Node = here(m.Node)
 	m.ID, m.UUID, m.Type, m.State = types.StringValue(p.Name), optional(p.UUID), types.StringValue(p.Type), types.StringValue(p.State)
 	m.Path, m.Autostart = optional(p.Path), types.BoolValue(p.Autostart)
 	m.CapacityGB, m.AllocationGB, m.AvailableGB = types.Float64Value(p.CapacityGB), types.Float64Value(p.AllocationGB), types.Float64Value(p.AvailableGB)
@@ -263,7 +264,7 @@ func (d *userDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 		Role     string `json:"role"`
 	}
 	name := m.Username.ValueString()
-	err := notFound(d.client.API.Call(ctx, "GET", "/auth/users/"+esc(name), nil, &u))
+	err := notFound(d.client.call(ctx, "GET", "/auth/users/"+esc(name), nil, &u))
 	if errors.Is(err, errNotFound) {
 		resp.Diagnostics.AddError(noSuch("account", name))
 		return
@@ -369,7 +370,7 @@ func (d *roleDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	var predefined map[string]struct {
 		Privileges []string `json:"privileges"`
 	}
-	if err := d.client.API.Call(ctx, "GET", "/acl/roles", nil, &predefined); err != nil {
+	if err := d.client.call(ctx, "GET", "/acl/roles", nil, &predefined); err != nil {
 		resp.Diagnostics.AddError("Cannot read the roles", err.Error())
 		return
 	}
@@ -407,6 +408,7 @@ type isoDataSource struct{ base }
 
 type isoDataModel struct {
 	Name    types.String  `tfsdk:"name"`
+	Node    types.String  `tfsdk:"node"`
 	ID      types.String  `tfsdk:"id"`
 	SizeMB  types.Float64 `tfsdk:"size_mb"`
 	AddedAt types.String  `tfsdk:"added_at"`
@@ -423,6 +425,7 @@ func (d *isoDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, re
 		Description: "An ISO image of the node's library, to install a VM from it (`hyperlite_vm.iso`).",
 		Attributes: map[string]schema.Attribute{
 			"name":     schema.StringAttribute{Required: true, Description: "The file's name (`debian-13.iso`)."},
+			"node":     dataNode("image"),
 			"id":       schema.StringAttribute{Computed: true, Description: "The file's name."},
 			"size_mb":  schema.Float64Attribute{Computed: true, Description: "Its size, in MB."},
 			"added_at": schema.StringAttribute{Computed: true, Description: "When it was added (RFC 3339)."},
@@ -440,13 +443,14 @@ func (d *isoDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		Name    string  `json:"name"`
 		SizeMB  float64 `json:"size_mb"`
 		AddedAt string  `json:"added_at"`
-	}](ctx, d.client, "/isos")
+	}](ctx, d.client.at(memberOf(m.Node)), "/isos")
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the ISO library", err.Error())
 		return
 	}
 	for _, i := range isos {
 		if i.Name == m.Name.ValueString() {
+			m.Node = here(m.Node)
 			m.ID, m.SizeMB, m.AddedAt = types.StringValue(i.Name), types.Float64Value(i.SizeMB), optional(i.AddedAt)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 			return

@@ -25,6 +25,10 @@ data "hyperlite_iso" "debian" {
 
 - `name` (String) The file's name (`debian-13.iso`).
 
+### Optional
+
+- `node` (String) The cluster member that holds the image, as on its resource (`local` when absent: the node the provider talks to).
+
 ### Read-Only
 
 - `added_at` (String) When it was added (RFC 3339).
