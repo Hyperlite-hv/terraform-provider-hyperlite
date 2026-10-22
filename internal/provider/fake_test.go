@@ -23,6 +23,7 @@ type fakeVM struct {
 	Autostart                   bool
 	Notes                       string
 	Tags                        []string
+	Schedule                    map[string]any // nil: no backup schedule
 }
 
 type fakeDisk struct {
@@ -42,10 +43,23 @@ type fakeHyperliteAPI struct {
 	calls   []string
 	seq     int
 	tasks   map[string]bool
+	jobs    map[int64]map[string]any // grouped backup jobs
+}
+
+// fakeBackupDir is the node's default backup directory, which the real server reports when none is set.
+const fakeBackupDir = "/var/lib/hyperlite/backups"
+
+// backupDir stores a directory as the server does: the default one is kept empty and read back in full.
+func backupDir(body map[string]any) map[string]any {
+	out := merge(body, nil)
+	if dir, _ := body["target_dir"].(string); dir == "" {
+		out["target_dir"] = fakeBackupDir
+	}
+	return out
 }
 
 func newFakeHyperlite(t *testing.T) (*fakeHyperliteAPI, *httptest.Server) {
-	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}}
+	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -272,6 +286,14 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 		case "boot PUT":
 			vm.Autostart = body["autostart"].(bool)
 			reply(w, 200, map[string]any{})
+		case "backup-schedule GET":
+			reply(w, 200, vm.Schedule)
+		case "backup-schedule PUT":
+			vm.Schedule = backupDir(body)
+			reply(w, 200, map[string]any{"message": "saved"})
+		case "backup-schedule DELETE":
+			vm.Schedule = nil
+			reply(w, 200, map[string]any{})
 		default:
 			fail(404, "fake: no route "+r.Method+" "+p)
 		}
@@ -336,6 +358,27 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "name": "p" + strconv.FormatInt(id, 10), "vms": f.pools[id]})
 		}
 		reply(w, 200, map[string]any{"items": items, "total": len(items)})
+	case p == "/backup-groups" && r.Method == "POST":
+		f.seq++
+		job := merge(backupDir(body), map[string]any{"id": int64(f.seq)})
+		f.jobs[int64(f.seq)] = job
+		reply(w, 201, job)
+	case len(seg) == 2 && seg[0] == "backup-groups":
+		id, _ := strconv.ParseInt(seg[1], 10, 64)
+		if f.jobs[id] == nil {
+			reply(w, 404, map[string]any{"detail": "Backup job not found", "code": "not_found"})
+			return
+		}
+		switch r.Method {
+		case "GET":
+			reply(w, 200, f.jobs[id])
+		case "PUT":
+			f.jobs[id] = merge(backupDir(body), map[string]any{"id": id})
+			reply(w, 200, f.jobs[id])
+		case "DELETE":
+			delete(f.jobs, id)
+			reply(w, 200, map[string]any{})
+		}
 	case len(seg) == 3 && seg[0] == "pools" && seg[2] == "members":
 		id, _ := strconv.ParseInt(seg[1], 10, 64)
 		f.pools[id] = append(f.pools[id], body["vm_name"].(string))

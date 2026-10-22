@@ -214,7 +214,7 @@ func TestAccNetwork(t *testing.T) {
 const accAccess = accProvider + `
 resource "hyperlite_user" "ci" {
   username = "tfacc-ci"
-  password = "Tfacc-Ci-Harbor-2026"
+  password = "Harbor-Lantern-2026"
 }
 
 resource "hyperlite_group" "ops" {
@@ -306,7 +306,7 @@ func TestAccStorage(t *testing.T) {
 			{
 				Config: accStorage,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("hyperlite_storage_pool.dir", "state", "running"),
+					resource.TestCheckResourceAttr("hyperlite_storage_pool.dir", "state", "active"),
 					resource.TestCheckResourceAttr("hyperlite_storage_volume.data", "volume", "tfacc-data.qcow2"),
 					resource.TestCheckResourceAttr("hyperlite_storage_volume.data", "size_gb", "1"),
 				),

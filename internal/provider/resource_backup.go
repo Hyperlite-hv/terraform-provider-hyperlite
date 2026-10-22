@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/Hyperlite-hv/Hyperlite/cli/hyperlite"
@@ -51,7 +53,10 @@ func scheduleAttributes() map[string]schema.Attribute {
 			Required: true, Validators: []validator.String{stringvalidator.RegexMatches(timeRe, "HH:MM, on 24 hours")},
 			Description: "The time of the run, `HH:MM`, on the node's clock.",
 		},
-		"target_dir": schema.StringAttribute{Optional: true, Description: "Where the backups go (an absolute path); absent: the node's default directory."},
+		"target_dir": schema.StringAttribute{
+			Optional: true, Computed: true, PlanModifiers: []planmodifier.String{defaultDirectory{}},
+			Description: "Where the backups go (an absolute path); absent: the node's default directory, which the server reports.",
+		},
 		"retention_count": schema.Int64Attribute{
 			Optional: true, Computed: true, Default: int64default.StaticInt64(7),
 			Validators: []validator.Int64{int64validator.Between(1, 365)}, Description: "The newest backups kept, besides those a GFS rule keeps.",
@@ -60,6 +65,42 @@ func scheduleAttributes() map[string]schema.Attribute {
 		"keep_weeks":  keep("weeks", 260),
 		"keep_months": keep("months", 120),
 	}
+}
+
+// targetDirSet is the private state key saying whether the configuration named target_dir at the last apply.
+const targetDirSet = "target_dir_set"
+
+// defaultDirectory plans target_dir when the configuration leaves it out. The server always reports the directory it
+// writes in, the default one included, so the attribute is computed; but a directory removed from the configuration
+// must go back to the default one, which the prior state alone cannot tell from a default already in place.
+type defaultDirectory struct{}
+
+func (defaultDirectory) Description(context.Context) string {
+	return "Keeps the default directory the server reports; one removed from the configuration goes back to the default."
+}
+
+func (d defaultDirectory) MarkdownDescription(ctx context.Context) string { return d.Description(ctx) }
+
+func (defaultDirectory) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if !req.ConfigValue.IsNull() || req.StateValue.IsNull() || req.Plan.Raw.IsNull() {
+		return // configured, created (unknown until the server answers) or destroyed
+	}
+	set, diags := req.Private.GetKey(ctx, targetDirSet)
+	resp.Diagnostics.Append(diags...)
+	if string(set) == "true" {
+		resp.PlanValue = types.StringUnknown()
+		return
+	}
+	resp.PlanValue = req.StateValue
+}
+
+// rememberTargetDir records for defaultDirectory whether the configuration names target_dir.
+func rememberTargetDir(ctx context.Context, config tfsdk.Config, private interface {
+	SetKey(context.Context, string, []byte) diag.Diagnostics
+}) diag.Diagnostics {
+	var dir types.String
+	diags := config.GetAttribute(ctx, path.Root("target_dir"), &dir)
+	return append(diags, private.SetKey(ctx, targetDirSet, []byte(strconv.FormatBool(!dir.IsNull())))...)
 }
 
 func optInt(v types.Int64) any {
@@ -128,7 +169,19 @@ func (r *scheduleResource) put(ctx context.Context, m *scheduleModel) error {
 		"retention_count": m.RetentionCount.ValueInt64(), "keep_days": optInt(m.KeepDays),
 		"keep_weeks": optInt(m.KeepWeeks), "keep_months": optInt(m.KeepMonths),
 	}
-	return r.client.API.Call(ctx, "PUT", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", body, nil)
+	if err := r.client.API.Call(ctx, "PUT", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", body, nil); err != nil {
+		return err
+	}
+	// The PUT answers no schedule: the directory the server chose (the default one, when none is set) is read back.
+	var s *scheduleWire
+	if err := r.client.API.Call(ctx, "GET", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", nil, &s); err != nil {
+		return err
+	}
+	if s == nil {
+		return errors.New("the server reports no schedule right after setting it")
+	}
+	m.TargetDir = optionalString(s.TargetDir, m.TargetDir)
+	return nil
 }
 
 func (r *scheduleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -143,6 +196,7 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 	}
 	m.ID = m.VM
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+	resp.Diagnostics.Append(rememberTargetDir(ctx, req.Config, resp.Private)...)
 }
 
 func (r *scheduleResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -179,6 +233,7 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 	m.ID = m.VM
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+	resp.Diagnostics.Append(rememberTargetDir(ctx, req.Config, resp.Private)...)
 }
 
 func (r *scheduleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -309,6 +364,7 @@ func (r *backupJobResource) Create(ctx context.Context, req resource.CreateReque
 	}
 	m.from(&w)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+	resp.Diagnostics.Append(rememberTargetDir(ctx, req.Config, resp.Private)...)
 }
 
 func (r *backupJobResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -345,6 +401,7 @@ func (r *backupJobResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	plan.from(&w)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(rememberTargetDir(ctx, req.Config, resp.Private)...)
 }
 
 func (r *backupJobResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

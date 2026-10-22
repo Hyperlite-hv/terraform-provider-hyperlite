@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -174,6 +175,38 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 		},
 	}
+}
+
+// The main rules of the server's password policy (app/core/password_policy.py), refused at plan as the dashboard
+// does; the server stays the authority for the others (sequences, well-known passwords).
+func (r *userResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var m userModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() || m.Password.IsNull() || m.Password.IsUnknown() {
+		return
+	}
+	if problem := passwordProblem(m.Password.ValueString(), m.Username.ValueString()); problem != "" {
+		resp.Diagnostics.AddAttributeError(path.Root("password"), "Password refused by Hyperlite's policy", problem+".")
+	}
+}
+
+func passwordProblem(password, username string) string {
+	low := strings.ToLower(password)
+	distinct := map[rune]bool{}
+	for _, c := range low {
+		distinct[c] = true
+	}
+	switch {
+	case utf8.RuneCountInString(password) < 12:
+		return "The password must contain at least 12 characters"
+	case len(password) > 72:
+		return "The password must not exceed 72 bytes (bcrypt ignores the rest)"
+	case utf8.RuneCountInString(username) >= 3 && strings.Contains(low, strings.ToLower(username)):
+		return "The password must not contain the account name"
+	case len(distinct) < 5:
+		return "The password is too repetitive: use more different characters"
+	}
+	return ""
 }
 
 func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
