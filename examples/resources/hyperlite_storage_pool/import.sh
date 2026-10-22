@@ -1,0 +1,1 @@
+terraform import hyperlite_storage_pool.fast fast

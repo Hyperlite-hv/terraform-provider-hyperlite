@@ -22,6 +22,30 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
 
+  # docs/ is generated from the schemas and examples/: a change of either without `go generate ./...` fails here.
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install terraform
+        run: |
+          bash scripts/install-cli.sh terraform 1.13.4 "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: The documentation is current
+        env:
+          CHECKPOINT_DISABLE: "1"
+        run: |
+          go generate ./...
+          git add -A docs
+          git diff --cached --exit-code docs || { echo "::error::docs/ is not current: run go generate ./... and commit docs/"; exit 1; }
+      - name: The examples are formatted
+        run: terraform fmt -recursive -check examples
+
   # The provider's tests drive a real terraform and a real tofu against a fake Hyperlite (internal/provider/*_test.go).
   cli:
     runs-on: ubuntu-24.04
