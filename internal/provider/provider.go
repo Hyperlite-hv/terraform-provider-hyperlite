@@ -179,6 +179,13 @@ func (p *hyperliteProvider) DataSources(_ context.Context) []func() datasource.D
 		newNodeDataSource,
 		newNetworkDataSource,
 		newTemplateDataSource,
+		newVMDataSource,
+		newStoragePoolDataSource,
+		newResourcePoolDataSource,
+		newUserDataSource,
+		newGroupDataSource,
+		newRoleDataSource,
+		newISODataSource,
 	}
 }
 
