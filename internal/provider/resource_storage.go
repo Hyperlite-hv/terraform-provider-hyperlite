@@ -67,7 +67,7 @@ func (r *storagePoolResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"iscsi_target":    opt("For `iscsi`: the target's IQN."),
 			"chap_user":       opt("For `iscsi`: the CHAP user."),
 			"chap_password":   schema.StringAttribute{Optional: true, Sensitive: true, PlanModifiers: replace, Description: "For `iscsi`: the CHAP password (never read back)."},
-			"state":           schema.StringAttribute{Computed: true, Description: "`running`, `inactive`..."},
+			"state":           schema.StringAttribute{Computed: true, Description: "`active`, `inactive`, `building`, `degraded` or `inaccessible`."},
 			"capacity_gb":     schema.Float64Attribute{Computed: true, Description: "Its capacity, in GB."},
 		},
 	}

@@ -63,3 +63,81 @@ resource "hyperlite_backup_job" "j" {
 		})
 	}
 }
+
+// The server reports the directory it writes in, the default one included: a schedule or a job without target_dir
+// plans no change once applied, and a directory removed from the configuration goes back to the default one.
+func TestTargetDirLeftOutIsTheServersDefault(t *testing.T) {
+	f, srv := newFakeHyperlite(t)
+	f.newVM("a", 1, 512, []float64{3}, "default", "default", false)
+	config := func(dir string) string {
+		return providerBlock(srv.URL, "hlt_ok") + `
+resource "hyperlite_vm_backup_schedule" "s" {
+  vm         = "a"
+  frequency  = "daily"
+  time       = "03:00"
+  ` + dir + `
+}
+
+resource "hyperlite_backup_job" "j" {
+  name      = "nightly"
+  selection = "all"
+  frequency = "daily"
+  time      = "01:00"
+  ` + dir + `
+}`
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.s", "target_dir", fakeBackupDir),
+					resource.TestCheckResourceAttr("hyperlite_backup_job.j", "target_dir", fakeBackupDir),
+				),
+			},
+			{
+				Config: config(`target_dir = "/mnt/nas/backups"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.s", "target_dir", "/mnt/nas/backups"),
+					resource.TestCheckResourceAttr("hyperlite_backup_job.j", "target_dir", "/mnt/nas/backups"),
+				),
+			},
+			{
+				Config: config(""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.s", "target_dir", fakeBackupDir),
+					resource.TestCheckResourceAttr("hyperlite_backup_job.j", "target_dir", fakeBackupDir),
+				),
+			},
+			{ResourceName: "hyperlite_backup_job.j", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_vm_backup_schedule.s", ImportState: true, ImportStateVerify: true},
+		},
+	})
+}
+
+// The main rules of the server's password policy are refused at plan.
+func TestPasswordsThePolicyRefusesAreRefusedAtPlan(t *testing.T) {
+	_, srv := newFakeHyperlite(t)
+	cases := map[string]string{
+		`at least 12 characters`:       "Short-2026",
+		`must not contain the account`: "Tfacc-Ci-Harbor-2026",
+		`too repetitive`:               "abababababab",
+	}
+	for want, password := range cases {
+		t.Run(want, func(t *testing.T) {
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: factories,
+				Steps: []resource.TestStep{{
+					Config: providerBlock(srv.URL, "hlt_ok") + `
+resource "hyperlite_user" "u" {
+  username = "tfacc-ci"
+  password = "` + password + `"
+}`,
+					PlanOnly:    true,
+					ExpectError: regexp.MustCompile(want),
+				}},
+			})
+		})
+	}
+}
