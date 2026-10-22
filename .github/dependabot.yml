@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    # The workflows, and the actions of this repository they use (their own pinned actions).
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly

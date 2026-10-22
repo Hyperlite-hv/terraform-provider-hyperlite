@@ -8,9 +8,16 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its previous run.
+concurrency:
+  group: test-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  unit:
+  # What does not need a terraform binary to run, together: one runner instead of two for a minute of work.
+  check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -21,21 +28,11 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go build ./...
-
-  # docs/ is generated from the schemas and examples/: a change of either without `go generate ./...` fails here.
-  docs:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
       - name: Install terraform
         run: |
           bash scripts/install-cli.sh terraform 1.13.4 "$HOME/bin"
           echo "$HOME/bin" >> "$GITHUB_PATH"
+      # docs/ is generated from the schemas and examples/: a change of either without `go generate ./...` fails here.
       - name: The documentation is current
         env:
           CHECKPOINT_DISABLE: "1"
@@ -45,10 +42,20 @@ jobs:
           git diff --cached --exit-code docs || { echo "::error::docs/ is not current: run go generate ./... and commit docs/"; exit 1; }
       - name: The examples are formatted
         run: terraform fmt -recursive -check examples
+      # The workflows and actions themselves: a template expanded into a shell, a permission wider than needed, an
+      # action pinned to a tag or to a commit outside its repository, a cache a pull request could write.
+      - name: Check the workflows (zizmor)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install -q --require-hashes -r .github/requirements-zizmor.txt
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --format=github --config .github/zizmor.yml .github/workflows .github/actions
 
   # The provider's tests drive a real terraform and a real tofu against a fake Hyperlite (internal/provider/*_test.go).
   cli:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +67,9 @@ jobs:
           - tool: tofu
             version: "1.10.6"
     name: ${{ matrix.tool }} ${{ matrix.version }}
+    env:
+      TOOL: ${{ matrix.tool }}
+      VERSION: ${{ matrix.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,11 +79,9 @@ jobs:
           go-version-file: go.mod
       - name: Install ${{ matrix.tool }} ${{ matrix.version }}
         run: |
-          bash scripts/install-cli.sh "${{ matrix.tool }}" "${{ matrix.version }}" "$HOME/bin"
+          bash scripts/install-cli.sh "$TOOL" "$VERSION" "$HOME/bin"
           echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Tests
-        env:
-          TOOL: ${{ matrix.tool }}
         run: |
           export TF_ACC_TERRAFORM_PATH="$(command -v "$TOOL")"
           if [ "$TOOL" = tofu ]; then export TF_ACC_PROVIDER_HOST=registry.opentofu.org; fi
