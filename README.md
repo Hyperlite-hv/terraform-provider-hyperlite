@@ -6,8 +6,20 @@ manager (KVM and LXC). It drives Hyperlite's API v1 with a personal API token.
 Its design, accepted by the maintainers, is Hyperlite's
 [`docs/design/terraform-provider.md`](https://github.com/Hyperlite-hv/Hyperlite/blob/test/docs/design/terraform-provider.md).
 
-**Status: under development.** Data sources `hyperlite_node`, `hyperlite_network` and `hyperlite_template` exist; the
-VM resource and the others follow (design, section 15). Not published to the registries yet.
+**Status: under development, not published to the registries yet.** It needs Hyperlite 1.2 or later (`?wait=false`
+on long operations).
+
+| Area | Resources | Data sources |
+|---|---|---|
+| VMs | `hyperlite_vm`, `hyperlite_template`, `hyperlite_vm_snapshot`, `hyperlite_vm_ha` | `hyperlite_vm`, `hyperlite_template` |
+| Backups | `hyperlite_vm_backup_schedule`, `hyperlite_backup_job` | |
+| Networks | `hyperlite_network`, `hyperlite_network_reservation` | `hyperlite_network` |
+| Storage | `hyperlite_storage_pool`, `hyperlite_storage_volume` | `hyperlite_storage_pool`, `hyperlite_iso` |
+| Access | `hyperlite_user`, `hyperlite_group`, `hyperlite_role`, `hyperlite_acl`, `hyperlite_resource_pool` | `hyperlite_user`, `hyperlite_group`, `hyperlite_role`, `hyperlite_resource_pool` |
+| Cluster | | `hyperlite_node` |
+
+Every resource is imported with `terraform import`. A value the server would store otherwise (a name it refuses, a
+tag or host name it lowercases, an address it rewrites) is refused at plan, with the form to write.
 
 ## Use
 
