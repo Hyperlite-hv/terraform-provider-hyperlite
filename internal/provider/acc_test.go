@@ -389,7 +389,7 @@ func TestAccBackup(t *testing.T) {
 			{ResourceName: "hyperlite_vm_snapshot.before", ImportState: true, ImportStateVerify: true},
 			{
 				Config:      accBackup("3", `resource "hyperlite_vm_ha" "small" { vm = hyperlite_vm.small.name }`),
-				ExpectError: regexp.MustCompile(`not on a shared storage pool`),
+				ExpectError: regexp.MustCompile(`not on a shared\s+storage\s+pool`),
 			},
 		},
 	})
