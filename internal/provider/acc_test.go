@@ -268,6 +268,26 @@ func TestAccAccess(t *testing.T) {
 			},
 			{Config: accAccess, PlanOnly: true},
 			{
+				// The data sources find by name what the step above made, and the predefined roles.
+				Config: accAccess + `
+data "hyperlite_user" "ci" { username = "tfacc-ci" }
+data "hyperlite_group" "ops" { name = "tfacc-ops" }
+data "hyperlite_role" "tf" { name = "tfacc-terraform" }
+data "hyperlite_role" "operator" { name = "operator" }
+data "hyperlite_resource_pool" "web" { name = "tfacc-web" }
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.hyperlite_user.ci", "role", "viewer"),
+					resource.TestCheckResourceAttrPair("data.hyperlite_group.ops", "id", "hyperlite_group.ops", "id"),
+					resource.TestCheckTypeSetElemAttr("data.hyperlite_group.ops", "members.*", "tfacc-ci"),
+					resource.TestCheckResourceAttrPair("data.hyperlite_role.tf", "key", "hyperlite_role.tf", "key"),
+					resource.TestCheckResourceAttr("data.hyperlite_role.tf", "custom", "true"),
+					resource.TestCheckResourceAttr("data.hyperlite_role.operator", "key", "operator"),
+					resource.TestCheckTypeSetElemAttr("data.hyperlite_role.operator", "privileges.*", "vm.power"),
+					resource.TestCheckResourceAttrPair("data.hyperlite_resource_pool.web", "id", "hyperlite_resource_pool.web", "id"),
+				),
+			},
+			{
 				Config: changed,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("hyperlite_role.tf", "privileges.#", "6"),
@@ -312,6 +332,15 @@ func TestAccStorage(t *testing.T) {
 				),
 			},
 			{Config: accStorage, PlanOnly: true},
+			{
+				Config: accStorage + `data "hyperlite_storage_pool" "dir" { name = "tfacc-dir" }`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.hyperlite_storage_pool.dir", "type", "dir"),
+					resource.TestCheckResourceAttr("data.hyperlite_storage_pool.dir", "state", "active"),
+					resource.TestCheckResourceAttr("data.hyperlite_storage_pool.dir", "path", "/var/lib/libvirt/tfacc-dir"),
+					resource.TestCheckResourceAttrSet("data.hyperlite_storage_pool.dir", "uuid"),
+				),
+			},
 			{ResourceName: "hyperlite_storage_pool.dir", ImportState: true, ImportStateVerify: true},
 			{ResourceName: "hyperlite_storage_volume.data", ImportState: true, ImportStateVerify: true},
 		},
@@ -383,6 +412,15 @@ func TestAccBackup(t *testing.T) {
 			{
 				Config: accBackup("3", ""),
 				Check:  resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.small", "retention_count", "3"),
+			},
+			{
+				Config: accBackup("3", `data "hyperlite_vm" "small" { name = "tfacc-bk" }`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrPair("data.hyperlite_vm.small", "id", "hyperlite_vm.small", "id"),
+					resource.TestCheckResourceAttr("data.hyperlite_vm.small", "node", "local"),
+					resource.TestCheckResourceAttr("data.hyperlite_vm.small", "vcpu", "1"),
+					resource.TestCheckResourceAttrPair("data.hyperlite_vm.small", "network_interface.0.mac", "hyperlite_vm.small", "network_interface.0.mac"),
+				),
 			},
 			{ResourceName: "hyperlite_vm_backup_schedule.small", ImportState: true, ImportStateVerify: true},
 			{ResourceName: "hyperlite_backup_job.tagged", ImportState: true, ImportStateVerify: true},
