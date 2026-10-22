@@ -44,6 +44,7 @@ resource "hyperlite_storage_pool" "nas" {
 - `nfs_export_path` (String) For `netfs`: the export.
 - `nfs_host` (String) For `netfs`: the NFS server.
 - `nfs_version` (String) For `netfs`: the NFS version (`4.2` when absent).
+- `node` (String) The member of the cluster the storage pool is on (absent: the node the provider talks to). Another member makes it again there.
 - `path` (String) For `dir`: the directory.
 - `size_gb` (Number) For `zfs`: the size of the pool's backing file.
 
@@ -60,5 +61,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By the pool's name; the same led by `<node>/` for one on another node of the cluster.
 terraform import hyperlite_storage_pool.fast fast
+terraform import hyperlite_storage_pool.fast pve-b/fast
 ```

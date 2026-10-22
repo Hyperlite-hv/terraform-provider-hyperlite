@@ -21,8 +21,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	"github.com/Hyperlite-hv/Hyperlite/cli/hyperlite"
 )
 
 // The server's own rule (app/core/backup_groups.py): two-digit hours and minutes.
@@ -130,6 +128,7 @@ type scheduleResource struct{ configured }
 
 type scheduleModel struct {
 	ID             types.String `tfsdk:"id"`
+	Node           types.String `tfsdk:"node"`
 	VM             types.String `tfsdk:"vm"`
 	Frequency      types.String `tfsdk:"frequency"`
 	Time           types.String `tfsdk:"time"`
@@ -150,6 +149,7 @@ func (r *scheduleResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 	attrs := scheduleAttributes()
 	attrs["id"] = schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "The VM's name."}
 	attrs["vm"] = schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Description: "The VM backed up."}
+	attrs["node"] = nodeAttribute(&r.configured, "VM")
 	resp.Schema = schema.Schema{Description: "The backup schedule of one VM.", Attributes: attrs}
 }
 
@@ -169,12 +169,15 @@ func (r *scheduleResource) put(ctx context.Context, m *scheduleModel) error {
 		"retention_count": m.RetentionCount.ValueInt64(), "keep_days": optInt(m.KeepDays),
 		"keep_weeks": optInt(m.KeepWeeks), "keep_months": optInt(m.KeepMonths),
 	}
-	if err := r.client.API.Call(ctx, "PUT", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", body, nil); err != nil {
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	if err := r.client.at(memberOf(m.Node)).call(ctx, "PUT", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", body, nil); err != nil {
 		return err
 	}
 	// The PUT answers no schedule: the directory the server chose (the default one, when none is set) is read back.
 	var s *scheduleWire
-	if err := r.client.API.Call(ctx, "GET", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", nil, &s); err != nil {
+	if err := r.client.at(memberOf(m.Node)).call(ctx, "GET", "/vms/"+esc(m.VM.ValueString())+"/backup-schedule", nil, &s); err != nil {
 		return err
 	}
 	if s == nil {
@@ -205,8 +208,12 @@ func (r *scheduleResource) Read(ctx context.Context, req resource.ReadRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
+	c := r.client.at(memberOf(m.Node))
 	var s *scheduleWire
-	err := notFound(r.client.API.Call(ctx, "GET", "/vms/"+esc(m.ID.ValueString())+"/backup-schedule", nil, &s))
+	err := notFound(c.call(ctx, "GET", "/vms/"+esc(m.ID.ValueString())+"/backup-schedule", nil, &s))
 	if errors.Is(err, errNotFound) || (err == nil && s == nil) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -239,13 +246,17 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 func (r *scheduleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m scheduleModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/vms/"+esc(m.ID.ValueString())+"/backup-schedule", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	c := r.client.at(memberOf(m.Node))
+	if err := c.call(ctx, "DELETE", "/vms/"+esc(m.ID.ValueString())+"/backup-schedule", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot remove the backup schedule", err.Error())
 	}
 }
 
+// ImportState takes `<vm>`, or `<node>/<vm>`.
 func (r *scheduleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if id := importOn(ctx, req, resp, "<vm>"); id != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id[0])...)
+	}
 }
 
 // ---- hyperlite_backup_job ----
@@ -358,7 +369,7 @@ func (r *backupJobResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 	var w backupJobWire
-	if err := r.client.API.Call(ctx, "POST", "/backup-groups", m.body(ctx), &w); err != nil {
+	if err := r.client.call(ctx, "POST", "/backup-groups", m.body(ctx), &w); err != nil {
 		resp.Diagnostics.AddError("Cannot create the backup job", err.Error())
 		return
 	}
@@ -374,7 +385,7 @@ func (r *backupJobResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 	var w backupJobWire
-	err := notFound(r.client.API.Call(ctx, "GET", "/backup-groups/"+m.ID.ValueString(), nil, &w))
+	err := notFound(r.client.call(ctx, "GET", "/backup-groups/"+m.ID.ValueString(), nil, &w))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -395,7 +406,7 @@ func (r *backupJobResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 	var w backupJobWire
-	if err := r.client.API.Call(ctx, "PUT", "/backup-groups/"+state.ID.ValueString(), plan.body(ctx), &w); err != nil {
+	if err := r.client.call(ctx, "PUT", "/backup-groups/"+state.ID.ValueString(), plan.body(ctx), &w); err != nil {
 		resp.Diagnostics.AddError("Cannot change the backup job", err.Error())
 		return
 	}
@@ -407,7 +418,7 @@ func (r *backupJobResource) Update(ctx context.Context, req resource.UpdateReque
 func (r *backupJobResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m backupJobModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/backup-groups/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/backup-groups/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the backup job", err.Error())
 	}
 }
@@ -422,6 +433,7 @@ type snapshotResource struct{ configured }
 
 type snapshotModel struct {
 	ID          types.String `tfsdk:"id"`
+	Node        types.String `tfsdk:"node"`
 	VM          types.String `tfsdk:"vm"`
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
@@ -439,8 +451,9 @@ func (r *snapshotResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		Description: "A snapshot of a VM (with its memory when it runs, on a qcow2 disk; disk only on ZFS). Destroying the resource deletes the snapshot; it never restores it.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "`<vm>/<snapshot>`."},
-			"vm": schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The VM."},
+			"node": nodeAttribute(&r.configured, "VM"),
+			"id":   schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "`<vm>/<snapshot>`."},
+			"vm":   schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The VM."},
 			"name": schema.StringAttribute{
 				Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)},
 				Description: "The snapshot's name.",
@@ -461,7 +474,7 @@ func (c *Client) snapshot(ctx context.Context, vm, name string) (*snapshotWire, 
 	var page struct {
 		Items []snapshotWire `json:"items"`
 	}
-	if err := c.API.Call(ctx, "GET", "/vms/"+esc(vm)+"/snapshots", nil, &page); err != nil {
+	if err := c.call(ctx, "GET", "/vms/"+esc(vm)+"/snapshots", nil, &page); err != nil {
 		return nil, notFound(err)
 	}
 	for i := range page.Items {
@@ -478,20 +491,24 @@ func (r *snapshotResource) Create(ctx context.Context, req resource.CreateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	body := map[string]any{"name": m.Name.ValueString(), "description": optStr(m.Description)}
 	var started startedTask
-	if err := r.client.API.Call(ctx, "POST", "/vms/"+esc(m.VM.ValueString())+"/snapshots", body, &started); err != nil {
+	if err := c.call(ctx, "POST", "/vms/"+esc(m.VM.ValueString())+"/snapshots", body, &started); err != nil {
 		resp.Diagnostics.AddError("Cannot take the snapshot", err.Error())
 		return
 	}
 	if started.TaskID != "" {
-		if _, err := r.client.API.WaitTask(ctx, started.TaskID, hyperlite.WaitOptions{}); err != nil {
+		if err := c.waitTask(ctx, started.TaskID); err != nil {
 			resp.Diagnostics.AddError("The snapshot failed", err.Error())
 			return
 		}
 	}
 	m.ID = types.StringValue(m.VM.ValueString() + "/" + m.Name.ValueString())
-	s, err := r.client.snapshot(ctx, m.VM.ValueString(), m.Name.ValueString())
+	s, err := c.snapshot(ctx, m.VM.ValueString(), m.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("The snapshot was taken but cannot be read", err.Error())
 		return
@@ -506,8 +523,12 @@ func (r *snapshotResource) Read(ctx context.Context, req resource.ReadRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
+	c := r.client.at(memberOf(m.Node))
 	vm, name, _ := strings.Cut(m.ID.ValueString(), "/")
-	s, err := r.client.snapshot(ctx, vm, name)
+	s, err := c.snapshot(ctx, vm, name)
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -529,9 +550,10 @@ func (r *snapshotResource) Update(context.Context, resource.UpdateRequest, *reso
 func (r *snapshotResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m snapshotModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	c := r.client.at(memberOf(m.Node))
 	vm, name, _ := strings.Cut(m.ID.ValueString(), "/")
 	var started startedTask
-	err := r.client.API.Call(ctx, "DELETE", "/vms/"+esc(vm)+"/snapshots/"+esc(name), nil, &started)
+	err := c.call(ctx, "DELETE", "/vms/"+esc(vm)+"/snapshots/"+esc(name), nil, &started)
 	if errors.Is(notFound(err), errNotFound) {
 		return
 	}
@@ -540,19 +562,17 @@ func (r *snapshotResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 	if started.TaskID != "" {
-		if _, err := r.client.API.WaitTask(ctx, started.TaskID, hyperlite.WaitOptions{}); err != nil {
+		if err := c.waitTask(ctx, started.TaskID); err != nil {
 			resp.Diagnostics.AddError("Deleting the snapshot failed", err.Error())
 		}
 	}
 }
 
-// ImportState takes `<vm>/<snapshot>`.
+// ImportState takes `<vm>/<snapshot>`, or `<node>/<vm>/<snapshot>`.
 func (r *snapshotResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	if vm, name, ok := strings.Cut(req.ID, "/"); !ok || vm == "" || name == "" {
-		resp.Diagnostics.AddError("Import id", "Give `<vm>/<snapshot>`.")
-		return
+	if id := importOn(ctx, req, resp, "<vm>/<snapshot>"); id != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), strings.Join(id, "/"))...)
 	}
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
 // ---- hyperlite_vm_ha ----
@@ -592,7 +612,7 @@ func (r *haResource) Create(ctx context.Context, req resource.CreateRequest, res
 	var out struct {
 		Node string `json:"node"`
 	}
-	if err := r.client.API.Call(ctx, "POST", "/ha/"+esc(m.VM.ValueString())+"/enable", map[string]any{"node": optStr(m.Node)}, &out); err != nil {
+	if err := r.client.call(ctx, "POST", "/ha/"+esc(m.VM.ValueString())+"/enable", map[string]any{"node": optStr(m.Node)}, &out); err != nil {
 		resp.Diagnostics.AddError("Cannot protect the VM", err.Error())
 		return
 	}
@@ -614,7 +634,7 @@ func (r *haResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 		VMName string `json:"vm_name"`
 		Node   string `json:"node"`
 	}
-	err := notFound(r.client.API.Call(ctx, "GET", "/ha/"+esc(m.ID.ValueString()), nil, &out))
+	err := notFound(r.client.call(ctx, "GET", "/ha/"+esc(m.ID.ValueString()), nil, &out))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -635,7 +655,7 @@ func (r *haResource) Update(context.Context, resource.UpdateRequest, *resource.U
 func (r *haResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m haModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/ha/"+esc(m.ID.ValueString()), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/ha/"+esc(m.ID.ValueString()), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot remove the HA protection", err.Error())
 	}
 }

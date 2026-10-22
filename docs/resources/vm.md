@@ -97,6 +97,7 @@ output "web_address" {
 - `guest_os` (String) The system an ISO installs, for the devices it gets (`auto` reads it from the ISO's name).
 - `iso` (String) An installation ISO of the node's library: the VM gets a blank system disk and is installed from its console. Without `iso` nor `clone`, the VM is made from Hyperlite's cloud image (Debian 12) and needs `cloud_init`.
 - `network_interface` (Block List) The VM's interfaces, in order. A change of network keeps the interface's MAC address. (see [below for nested schema](#nestedblock--network_interface))
+- `node` (String) The member of the cluster the VM runs on: it is made there, and every change is done there (Hyperlite sends the request on). Absent: the node the provider talks to, and the node it is read on afterwards (HA may move it). A change **migrates** the VM, live, as vSphere moves a VM when its host changes: Hyperlite migrates running VMs only.
 - `notes` (String) Notes, as the dashboard shows them.
 - `resource_pool` (Number) The pool (its id) the VM is a member of: its assignments give rights on the VM. Required from an account that is not an administrator (vm.allocate on the pool).
 - `shutdown_timeout` (String) How long a clean shutdown may take before a change that needs the VM stopped, or its deletion.
@@ -109,7 +110,6 @@ output "web_address" {
 
 - `id` (String) The VM's UUID: it stays the same when the VM is renamed.
 - `ip_address` (String) The VM's address: the static one of `customize`, else its DHCP lease or its guest agent's.
-- `node` (String) The node the VM runs on (`local` for the node the provider talks to).
 - `state` (String) `active`, `stopped`, `paused`, `crashed`...
 
 <a id="nestedblock--clone"></a>

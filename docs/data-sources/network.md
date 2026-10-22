@@ -25,6 +25,10 @@ data "hyperlite_network" "lan" {
 
 - `name` (String) The network's name.
 
+### Optional
+
+- `node` (String) The cluster member that holds the network, as on its resource (`local` when absent: the node the provider talks to).
+
 ### Read-Only
 
 - `active` (Boolean) Started.

@@ -31,7 +31,7 @@ output "free_gb" {
 
 ### Optional
 
-- `node` (String) The node it is on (`local` when absent).
+- `node` (String) The cluster member that holds the pool, as on its resource (`local` when absent: the node the provider talks to).
 
 ### Read-Only
 
