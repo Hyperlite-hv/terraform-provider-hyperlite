@@ -112,4 +112,9 @@ jobs:
         if: failure()
         run: |
           tail -c 6000 /tmp/hyperlite.log | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\n','%0A'); print('::error title=hyperlite log::'+t)"
-          sudo virsh list --all || true
+          # What is left on the node, as an annotation too (a job's log is not readable from everywhere).
+          {
+            sudo virsh list --all
+            echo "== /srv/tfacc-nfs"; sudo ls -la /srv/tfacc-nfs
+            for p in $(sudo virsh pool-list --all --name); do echo "== pool $p"; sudo virsh vol-list "$p"; done
+          } 2>&1 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\n','%0A'); print('::error title=node state::'+t)" || true
