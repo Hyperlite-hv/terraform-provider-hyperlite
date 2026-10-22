@@ -8,7 +8,7 @@ on:
     inputs:
       hyperlite_ref:
         description: "Branch or tag of Hyperlite to test against"
-        default: "claude/integration"
+        default: "test"
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
           - tool: tofu
             version: "1.10.6"
     env:
-      HYPERLITE_REF: ${{ inputs.hyperlite_ref || 'claude/integration' }}
+      HYPERLITE_REF: ${{ inputs.hyperlite_ref || 'test' }}
       E2E_PORT: "8011"
       E2E_ADMIN_PASSWORD: Acceptance-Quartz-Harbor-2026
     steps:
