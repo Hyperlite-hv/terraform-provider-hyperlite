@@ -205,7 +205,7 @@ func (r *isoResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	}
 	// In place: a rename, or a source named after an import (nothing to upload).
 	if !plan.Name.Equal(state.Name) {
-		if err := r.client.API.Call(ctx, "POST", "/isos/"+esc(state.ID.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
+		if err := r.client.call(ctx, "POST", "/isos/"+esc(state.ID.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the ISO image", err.Error())
 			return
 		}
@@ -222,7 +222,7 @@ func (r *isoResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *isoResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m isoResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	err := notFound(r.client.API.Call(ctx, "DELETE", "/isos/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil))
+	err := notFound(r.client.call(ctx, "DELETE", "/isos/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil))
 	if err != nil && !errors.Is(err, errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the ISO image", err.Error())
 	}

@@ -44,6 +44,7 @@ resource "hyperlite_network" "dmz" {
 - `dhcp_end` (String) Last address of the DHCP range.
 - `dhcp_start` (String) First address Hyperlite's DHCP hands out (with `dhcp_end`; none: no DHCP).
 - `netmask` (String) Its netmask (`255.255.255.0` when absent).
+- `node` (String) The member of the cluster the network is on (absent: the node the provider talks to). Another member makes it again there.
 
 ### Read-Only
 
@@ -58,5 +59,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By the network's name; the same led by `<node>/` for one on another node of the cluster.
 terraform import hyperlite_network.lan lan
+terraform import hyperlite_network.lan pve-b/lan
 ```

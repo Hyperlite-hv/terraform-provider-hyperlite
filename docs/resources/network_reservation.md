@@ -33,6 +33,7 @@ resource "hyperlite_network_reservation" "web" {
 ### Optional
 
 - `name` (String) A host name given with it.
+- `node` (String) The member of the cluster the reservation's network is on (absent: the node the provider talks to). Another member makes it again there.
 
 ### Read-Only
 
@@ -45,5 +46,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By `<network>/<mac>`; the same led by `<node>/` for one on another node of the cluster.
 terraform import hyperlite_network_reservation.web lan/52:54:00:12:34:56
+terraform import hyperlite_network_reservation.web pve-b/lan/52:54:00:12:34:56
 ```

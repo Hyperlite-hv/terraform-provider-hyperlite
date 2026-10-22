@@ -28,8 +28,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	"github.com/Hyperlite-hv/Hyperlite/cli/hyperlite"
 )
 
 var (
@@ -146,8 +144,11 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 				Description: "The VM's name. A change renames it (the VM is stopped for it, then started again).",
 			},
 			"node": schema.StringAttribute{
-				Computed: true, PlanModifiers: keep,
-				Description: "The node the VM runs on (`local` for the node the provider talks to).",
+				Optional: true, Computed: true, PlanModifiers: keep,
+				Description: "The member of the cluster the VM runs on: it is made there, and every change is done there " +
+					"(Hyperlite sends the request on). Absent: the node the provider talks to, and the node it is read on " +
+					"afterwards (HA may move it). A change **migrates** the VM, live, as vSphere moves a VM when its host " +
+					"changes: Hyperlite migrates running VMs only.",
 			},
 			"vcpu": schema.Int64Attribute{
 				Required: true, Validators: []validator.Int64{int64validator.AtLeast(1)},
@@ -408,19 +409,22 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 		resp.Diagnostics.AddError("Cannot create the VM", err.Error())
 		return
 	}
-	vm, err := r.client.vmByName(ctx, name, "")
+	vm, err := r.on(&plan).vmByName(ctx, name, "")
 	if err != nil {
 		resp.Diagnostics.AddError("The VM was made but cannot be read", err.Error())
 		return
 	}
 	plan.ID = types.StringValue(vm.UUID)
+	if plan.Node.IsUnknown() {
+		plan.Node = types.StringValue(vm.Node)
+	}
 	// From here the VM exists: a failure leaves it in the state, tainted, and the next apply replaces it.
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), plan.ID)...)
 	if err := r.configure(ctx, &plan, nil, true); err != nil {
 		resp.Diagnostics.AddError("The VM was made but its configuration failed", err.Error())
 		return
 	}
-	if err := r.client.startVM(ctx, name); err != nil && !isConflict(err) {
+	if err := r.on(&plan).startVM(ctx, name); err != nil && !isConflict(err) {
 		resp.Diagnostics.AddError("The VM was made but did not start", err.Error())
 		return
 	}
@@ -432,15 +436,26 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
+// on is the client of the VM's member (its `node`; the node the provider talks to when unknown).
+func (r *vmResource) on(m *vmModel) *Client { return r.client.at(memberOf(m.Node)) }
+
+// memberOf is a `node` attribute as a member's name: "" when absent or not known yet.
+func memberOf(v types.String) string {
+	if v.IsNull() || v.IsUnknown() {
+		return ""
+	}
+	return v.ValueString()
+}
+
 // make creates the VM, stopped: from a template, another VM, an ISO or Hyperlite's cloud image.
 func (r *vmResource) make(ctx context.Context, m *vmModel) error {
 	name := m.Name.ValueString()
 	switch {
 	case m.Clone != nil && !m.Clone.Template.IsNull():
 		body := map[string]any{"new_name": name, "network": m.Interfaces[0].Network.ValueString()}
-		return r.client.runTask(ctx, "POST", "/templates/"+esc(m.Clone.Template.ValueString())+"/deploy", body)
+		return r.on(m).runTask(ctx, "POST", "/templates/"+esc(m.Clone.Template.ValueString())+"/deploy", body)
 	case m.Clone != nil:
-		return r.client.runTask(ctx, "POST", "/vms/"+esc(m.Clone.VM.ValueString())+"/clone", map[string]any{"new_name": name})
+		return r.on(m).runTask(ctx, "POST", "/vms/"+esc(m.Clone.VM.ValueString())+"/clone", map[string]any{"new_name": name})
 	}
 	disks := make([]map[string]any, len(m.Disks))
 	for i, d := range m.Disks {
@@ -469,13 +484,13 @@ func (r *vmResource) make(ctx context.Context, m *vmModel) error {
 		body["username"] = m.CloudInit.User.ValueString()
 		body["password"] = m.CloudInit.Password.ValueString()
 	}
-	return r.client.runTask(ctx, "POST", "/vms", body)
+	return r.on(m).runTask(ctx, "POST", "/vms", body)
 }
 
 // configure brings the VM to the plan: resources, disks, interfaces, cloud-init, pool, start at boot, notes and tags.
 // `prior` is the state before (nil at creation). The VM is stopped for what needs it; `fresh`: it is new and stopped.
 func (r *vmResource) configure(ctx context.Context, plan, prior *vmModel, fresh bool) error {
-	c := r.client
+	c := r.on(plan)
 	name := plan.Name.ValueString()
 	vm, err := c.vmByName(ctx, name, "")
 	if err != nil {
@@ -483,7 +498,7 @@ func (r *vmResource) configure(ctx context.Context, plan, prior *vmModel, fresh 
 	}
 	if vm.VCPU != plan.VCPU.ValueInt64() || int64(math.Round(vm.MemoryMB)) != plan.MemoryMB.ValueInt64() {
 		if err := r.stopped(ctx, plan, func() error {
-			return c.API.Call(ctx, "PATCH", "/vms/"+esc(name), map[string]any{"vcpu": plan.VCPU.ValueInt64(), "memory_mb": plan.MemoryMB.ValueInt64()}, nil)
+			return c.call(ctx, "PATCH", "/vms/"+esc(name), map[string]any{"vcpu": plan.VCPU.ValueInt64(), "memory_mb": plan.MemoryMB.ValueInt64()}, nil)
 		}); err != nil {
 			return fmt.Errorf("CPU and memory: %w", err)
 		}
@@ -519,10 +534,31 @@ func (r *vmResource) configure(ctx context.Context, plan, prior *vmModel, fresh 
 	return nil
 }
 
+// migrate moves the VM to the member `to`, live (POST /vms/{name}/migrate on its member, a task followed there), as
+// vSphere moves a VM when its host changes. Hyperlite migrates a running VM only: a stopped one is refused, with the
+// reason.
+func (r *vmResource) migrate(ctx context.Context, m *vmModel, to string) error {
+	c := r.on(m)
+	// The request runs on the VM's member: "local" there would be that member. The node the provider talks to is
+	// named by its name.
+	if r.client.canonical(to) == "" {
+		if r.client.self == "" {
+			return fmt.Errorf("this Hyperlite does not say its node's name (GET /health, 1.3 or later): name the destination node")
+		}
+		to = r.client.self
+	}
+	var started startedTask
+	body := map[string]any{"target_node": to}
+	if err := c.call(ctx, "POST", "/vms/"+esc(m.Name.ValueString())+"/migrate", body, &started); err != nil {
+		return err
+	}
+	return c.waitTask(ctx, started.TaskID)
+}
+
 // stopped runs fn with the VM stopped, then starts it again if it was running.
 func (r *vmResource) stopped(ctx context.Context, m *vmModel, fn func() error) error {
 	name := m.Name.ValueString()
-	return r.client.whileStopped(ctx, name, duration(m.ShutdownTimeout, 3*time.Minute), m.ForceStop.ValueBool(), func() (string, error) {
+	return r.on(m).whileStopped(ctx, name, duration(m.ShutdownTimeout, 3*time.Minute), m.ForceStop.ValueBool(), func() (string, error) {
 		return name, fn()
 	})
 }
@@ -530,8 +566,9 @@ func (r *vmResource) stopped(ctx context.Context, m *vmModel, fn func() error) e
 // rename stops the VM (Hyperlite renames a stopped VM), renames it, and starts it again under its new name if it ran.
 func (r *vmResource) rename(ctx context.Context, state *vmModel, to string) error {
 	from := state.Name.ValueString()
-	return r.client.whileStopped(ctx, from, duration(state.ShutdownTimeout, 3*time.Minute), state.ForceStop.ValueBool(), func() (string, error) {
-		return to, r.client.API.Call(ctx, "POST", "/vms/"+esc(from)+"/rename", map[string]any{"new_name": to}, nil)
+	c := r.on(state)
+	return c.whileStopped(ctx, from, duration(state.ShutdownTimeout, 3*time.Minute), state.ForceStop.ValueBool(), func() (string, error) {
+		return to, c.call(ctx, "POST", "/vms/"+esc(from)+"/rename", map[string]any{"new_name": to}, nil)
 	})
 }
 
@@ -545,7 +582,7 @@ func (r *vmResource) tryLive(ctx context.Context, m *vmModel, fn func() error) e
 }
 
 func (r *vmResource) reconcileDisks(ctx context.Context, plan *vmModel) error {
-	c := r.client
+	c := r.on(plan)
 	name := plan.Name.ValueString()
 	actual, err := c.vmDisks(ctx, name, "")
 	if err != nil {
@@ -558,7 +595,7 @@ func (r *vmResource) reconcileDisks(ctx context.Context, plan *vmModel) error {
 			if have.SizeGB != nil && float64(want.SizeGB.ValueInt64()) > *have.SizeGB+0.01 {
 				body := map[string]any{"size_gb": want.SizeGB.ValueInt64()}
 				if err := r.tryLive(ctx, plan, func() error {
-					return c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/disks/"+esc(have.Target)+"/resize", body, nil)
+					return c.call(ctx, "POST", "/vms/"+esc(name)+"/disks/"+esc(have.Target)+"/resize", body, nil)
 				}); err != nil {
 					return fmt.Errorf("growing %s: %w", have.Target, err)
 				}
@@ -583,7 +620,7 @@ func (r *vmResource) reconcileDisks(ctx context.Context, plan *vmModel) error {
 		var made struct {
 			Name string `json:"name"`
 		}
-		if err := c.API.Call(ctx, "POST", "/storage/"+esc(pool)+"/volumes", map[string]any{"name": volume, "size_gb": want.SizeGB.ValueInt64()}, &made); err != nil {
+		if err := c.call(ctx, "POST", "/storage/"+esc(pool)+"/volumes", map[string]any{"name": volume, "size_gb": want.SizeGB.ValueInt64()}, &made); err != nil {
 			return fmt.Errorf("creating disk %d on %s: %w", i, pool, err)
 		}
 		if made.Name == "" {
@@ -592,7 +629,7 @@ func (r *vmResource) reconcileDisks(ctx context.Context, plan *vmModel) error {
 		target := nextTarget(actual)
 		attach := map[string]any{"volume_name": made.Name, "pool": pool, "target_dev": target}
 		if err := r.tryLive(ctx, plan, func() error {
-			return c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/disks", attach, nil)
+			return c.call(ctx, "POST", "/vms/"+esc(name)+"/disks", attach, nil)
 		}); err != nil {
 			return fmt.Errorf("attaching disk %d: %w", i, err)
 		}
@@ -601,13 +638,13 @@ func (r *vmResource) reconcileDisks(ctx context.Context, plan *vmModel) error {
 	for i := len(actual) - 1; i >= len(plan.Disks); i-- {
 		have := actual[i]
 		if err := r.tryLive(ctx, plan, func() error {
-			return c.API.Call(ctx, "DELETE", "/vms/"+esc(name)+"/disks/"+esc(have.Target), nil, nil)
+			return c.call(ctx, "DELETE", "/vms/"+esc(name)+"/disks/"+esc(have.Target), nil, nil)
 		}); err != nil {
 			return fmt.Errorf("detaching %s: %w", have.Target, err)
 		}
 		if have.Pool != nil && have.Source != "" {
 			// The disk removed from the configuration is deleted, as Terraform deletes what it no longer manages.
-			if err := c.API.Call(ctx, "DELETE", "/storage/"+esc(*have.Pool)+"/volumes/"+esc(stdpath.Base(have.Source))+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+			if err := c.call(ctx, "DELETE", "/storage/"+esc(*have.Pool)+"/volumes/"+esc(stdpath.Base(have.Source))+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 				return fmt.Errorf("deleting the volume of %s: %w", have.Target, err)
 			}
 		}
@@ -618,14 +655,13 @@ func (r *vmResource) reconcileDisks(ctx context.Context, plan *vmModel) error {
 // runMove moves a disk to another storage pool (POST /vms/{name}/disks/{dev}/move, a task).
 func (c *Client) runMove(ctx context.Context, name, target, pool string) error {
 	var started startedTask
-	if err := c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/disks/"+esc(target)+"/move", map[string]any{"pool": pool}, &started); err != nil {
+	if err := c.call(ctx, "POST", "/vms/"+esc(name)+"/disks/"+esc(target)+"/move", map[string]any{"pool": pool}, &started); err != nil {
 		return err
 	}
 	if started.TaskID == "" {
 		return nil
 	}
-	_, err := c.API.WaitTask(ctx, started.TaskID, hyperlite.WaitOptions{})
-	return err
+	return c.waitTask(ctx, started.TaskID)
 }
 
 // nextTarget is the first free device name on the bus of the VM's disks (sdb after sda, vdc after vdb).
@@ -647,7 +683,7 @@ func nextTarget(disks []vmDisk) string {
 }
 
 func (r *vmResource) reconcileInterfaces(ctx context.Context, plan *vmModel) error {
-	c := r.client
+	c := r.on(plan)
 	name := plan.Name.ValueString()
 	actual, err := c.vmInterfaces(ctx, name, "")
 	if err != nil {
@@ -664,7 +700,7 @@ func (r *vmResource) reconcileInterfaces(ctx context.Context, plan *vmModel) err
 			sameTag := (have.VLAN == nil && want.VLANTag.IsNull()) || (have.VLAN != nil && !want.VLANTag.IsNull() && *have.VLAN == want.VLANTag.ValueInt64())
 			if have.Network != want.Network.ValueString() || !sameTag {
 				if err := r.tryLive(ctx, plan, func() error {
-					return c.API.Call(ctx, "PUT", "/vms/"+esc(name)+"/network?mac="+have.MAC, body, nil)
+					return c.call(ctx, "PUT", "/vms/"+esc(name)+"/network?mac="+have.MAC, body, nil)
 				}); err != nil {
 					return fmt.Errorf("moving interface %d (%s) to %s: %w", i, have.MAC, want.Network.ValueString(), err)
 				}
@@ -672,7 +708,7 @@ func (r *vmResource) reconcileInterfaces(ctx context.Context, plan *vmModel) err
 			continue
 		}
 		if err := r.tryLive(ctx, plan, func() error {
-			return c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/interfaces", body, nil)
+			return c.call(ctx, "POST", "/vms/"+esc(name)+"/interfaces", body, nil)
 		}); err != nil {
 			return fmt.Errorf("adding interface %d on %s: %w", i, want.Network.ValueString(), err)
 		}
@@ -680,7 +716,7 @@ func (r *vmResource) reconcileInterfaces(ctx context.Context, plan *vmModel) err
 	for i := len(actual) - 1; i >= len(plan.Interfaces); i-- {
 		mac := actual[i].MAC
 		if err := r.tryLive(ctx, plan, func() error {
-			return c.API.Call(ctx, "DELETE", "/vms/"+esc(name)+"/interfaces/"+esc(mac), nil, nil)
+			return c.call(ctx, "DELETE", "/vms/"+esc(name)+"/interfaces/"+esc(mac), nil, nil)
 		}); err != nil {
 			return fmt.Errorf("removing interface %d (%s): %w", i, mac, err)
 		}
@@ -691,7 +727,7 @@ func (r *vmResource) reconcileInterfaces(ctx context.Context, plan *vmModel) err
 // writeCloudInit writes the account and the customisation on the VM's drive, every field, so it holds exactly the
 // configuration (a block removed clears what it set).
 func (r *vmResource) writeCloudInit(ctx context.Context, plan, prior *vmModel) error {
-	c := r.client
+	c := r.on(plan)
 	name := plan.Name.ValueString()
 	current, err := c.vmCloudInit(ctx, name)
 	if err != nil {
@@ -763,12 +799,12 @@ func (r *vmResource) reconcilePool(ctx context.Context, plan, prior *vmModel, fr
 		return nil
 	}
 	if !had.IsNull() {
-		if err := c.API.Call(ctx, "DELETE", fmt.Sprintf("/pools/%d/members/%s", had.ValueInt64(), esc(name)), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+		if err := c.call(ctx, "DELETE", fmt.Sprintf("/pools/%d/members/%s", had.ValueInt64(), esc(name)), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 			return err
 		}
 	}
 	if !want.IsNull() {
-		return c.API.Call(ctx, "POST", fmt.Sprintf("/pools/%d/members", want.ValueInt64()), map[string]any{"vm_name": name}, nil)
+		return c.call(ctx, "POST", fmt.Sprintf("/pools/%d/members", want.ValueInt64()), map[string]any{"vm_name": name}, nil)
 	}
 	return nil
 }
@@ -784,7 +820,7 @@ func (r *vmResource) awaitAddress(ctx context.Context, m *vmModel) error {
 		m.IPAddress = types.StringNull()
 		return nil
 	}
-	ip, err := r.client.waitIP(ctx, m.Name.ValueString(), within)
+	ip, err := r.on(m).waitIP(ctx, m.Name.ValueString(), within)
 	if err != nil {
 		return err
 	}
@@ -827,6 +863,10 @@ func (r *vmResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 		return
 	}
 	state.Name = types.StringValue(vm.Name)
+	// Where the cluster says it is (HA may have moved it), under the name the configuration gives that node.
+	if !r.client.sameNode(vm.Node, memberOf(state.Node)) {
+		state.Node = types.StringValue(vm.Node)
+	}
 	resp.Diagnostics.Append(r.read(ctx, &state)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -834,7 +874,7 @@ func (r *vmResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 // read fills the model from Hyperlite: what the VM is, by its name.
 func (r *vmResource) read(ctx context.Context, m *vmModel) diag.Diagnostics {
 	var diags diag.Diagnostics
-	c := r.client
+	c := r.on(m)
 	name := m.Name.ValueString()
 	node := m.Node.ValueString()
 	if m.Node.IsUnknown() || m.Node.IsNull() {
@@ -845,7 +885,11 @@ func (r *vmResource) read(ctx context.Context, m *vmModel) diag.Diagnostics {
 		diags.AddError("Cannot read the VM", err.Error())
 		return diags
 	}
-	m.ID, m.Node, m.State = types.StringValue(vm.UUID), types.StringValue(vm.Node), types.StringValue(vm.State)
+	m.ID, m.State = types.StringValue(vm.UUID), types.StringValue(vm.State)
+	// Read on the member named: the configuration's name for it stays.
+	if m.Node.IsUnknown() || m.Node.IsNull() || !r.client.sameNode(vm.Node, m.Node.ValueString()) {
+		m.Node = types.StringValue(vm.Node)
+	}
 	m.VCPU, m.MemoryMB = types.Int64Value(vm.VCPU), types.Int64Value(int64(math.Round(vm.MemoryMB)))
 	m.Firmware = types.StringValue(vm.Firmware)
 	if m.GuestOS.IsNull() || m.GuestOS.IsUnknown() {
@@ -956,7 +1000,7 @@ func (r *vmResource) read(ctx context.Context, m *vmModel) diag.Diagnostics {
 
 	if !m.ResourcePool.IsNull() {
 		// Read back for an administrator; another account may not list the pools, and keeps what it set.
-		if pools, err := c.poolsOf(ctx, name); err == nil {
+		if pools, err := r.client.poolsOf(ctx, name); err == nil {
 			found := false
 			for _, p := range pools {
 				found = found || p == m.ResourcePool.ValueInt64()
@@ -987,6 +1031,13 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	if to := memberOf(plan.Node); !plan.Node.IsUnknown() && !r.client.sameNode(to, memberOf(state.Node)) {
+		if err := r.migrate(ctx, &state, to); err != nil {
+			resp.Diagnostics.AddError("Cannot migrate the VM", err.Error())
+			return
+		}
+		state.Node = plan.Node
+	}
 	if plan.Name.ValueString() != state.Name.ValueString() {
 		if err := r.rename(ctx, &state, plan.Name.ValueString()); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the VM", err.Error())
@@ -998,7 +1049,9 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		return
 	}
 	plan.ID = state.ID
-	plan.Node = state.Node
+	if plan.Node.IsUnknown() {
+		plan.Node = state.Node
+	}
 	resp.Diagnostics.Append(r.read(ctx, &plan)...)
 	if ip := staticAddress(ctx, &plan); ip != "" {
 		plan.IPAddress = types.StringValue(ip)
@@ -1027,24 +1080,25 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 		resp.Diagnostics.AddError("Cannot read the VM", err.Error())
 		return
 	}
+	c = c.at(vm.Node)
 	if err := c.stopVM(ctx, vm.Name, duration(state.ShutdownTimeout, 3*time.Minute), state.ForceStop.ValueBool()); err != nil {
 		resp.Diagnostics.AddError("Cannot stop the VM before deleting it", err.Error())
 		return
 	}
-	if err := c.API.Call(ctx, "DELETE", "/vms/"+esc(vm.Name)+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := c.call(ctx, "DELETE", "/vms/"+esc(vm.Name)+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the VM", err.Error())
 	}
 }
 
 // ImportState takes the VM's name, `<node>/<name>` or its UUID.
 func (r *vmResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	id := req.ID
-	if _, name, ok := strings.Cut(id, "/"); ok {
-		id = name
+	id, node := req.ID, ""
+	if n, name, ok := strings.Cut(id, "/"); ok {
+		id, node = name, n
 	}
 	uuid := id
 	if !uuidRe.MatchString(id) {
-		vm, err := r.client.vmByName(ctx, id, "")
+		vm, err := r.client.vmByName(ctx, id, node)
 		if err != nil {
 			resp.Diagnostics.AddError("No such VM", fmt.Sprintf("%q: %v", req.ID, err))
 			return

@@ -47,6 +47,10 @@ type fakeHyperliteAPI struct {
 	jobs    map[int64]map[string]any  // grouped backup jobs
 	tpls    map[string]map[string]any // templates, by name
 	isos    map[string][]byte         // the ISO library: name -> content
+	// self is this node's name in its cluster ("" for a node that does not say it, before 1.3); members are the
+	// cluster's nodes, this one included, by name.
+	self    string
+	members map[string]*fakeHyperliteAPI
 }
 
 // fakeBackupDir is the node's default backup directory, which the real server reports when none is set.
@@ -61,11 +65,29 @@ func backupDir(body map[string]any) map[string]any {
 	return out
 }
 
+func newFakeNode(t *testing.T) *fakeHyperliteAPI {
+	return &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}, tpls: map[string]map[string]any{}, isos: map[string][]byte{}}
+}
+
 func newFakeHyperlite(t *testing.T) (*fakeHyperliteAPI, *httptest.Server) {
-	f := &fakeHyperliteAPI{t: t, vms: map[string]*fakeVM{}, pools: map[int64][]string{7: {}}, volumes: map[string]float64{}, tasks: map[string]bool{}, jobs: map[int64]map[string]any{}, tpls: map[string]map[string]any{}, isos: map[string][]byte{}}
+	f := newFakeNode(t)
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, srv
+}
+
+// newFakeCluster is a cluster whose first member, hv-a, is the one the provider talks to; it sends a request naming
+// another member (?node=) to it, as Hyperlite does.
+func newFakeCluster(t *testing.T, others ...string) (map[string]*fakeHyperliteAPI, *httptest.Server) {
+	f, srv := newFakeHyperlite(t)
+	members := map[string]*fakeHyperliteAPI{"hv-a": f}
+	for _, name := range others {
+		members[name] = newFakeNode(t)
+	}
+	for name, m := range members {
+		m.self, m.members = name, members
+	}
+	return members, srv
 }
 
 func (f *fakeHyperliteAPI) mac() string {
@@ -113,9 +135,25 @@ func reply(w http.ResponseWriter, status int, v any) {
 }
 
 func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/api/v1")
+	if node := r.URL.Query().Get("node"); node != "" && node != "local" && node != f.self {
+		f.mu.Lock()
+		f.calls = append(f.calls, r.Method+" "+p+"?"+r.URL.RawQuery)
+		f.mu.Unlock()
+		member := f.members[node]
+		if member == nil {
+			reply(w, 409, map[string]any{"detail": node + " is not a member of this cluster", "code": "conflict"})
+			return
+		}
+		q := r.URL.Query()
+		q.Del("node")
+		sent := r.Clone(r.Context())
+		sent.URL.RawQuery = q.Encode()
+		member.serve(w, sent)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p := strings.TrimPrefix(r.URL.Path, "/api/v1")
 	f.calls = append(f.calls, r.Method+" "+p+"?"+r.URL.RawQuery)
 	var body map[string]any
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
@@ -134,7 +172,11 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case p == "/health":
-		reply(w, 200, map[string]any{"status": "ok", "api": 1, "hyperlite_version": "1.2.0"})
+		health := map[string]any{"status": "ok", "api": 1, "hyperlite_version": "1.2.0"}
+		if f.self != "" {
+			health["node"] = f.self
+		}
+		reply(w, 200, health)
 	case p == "/auth/me":
 		reply(w, 200, map[string]any{"username": "terraform"})
 	case len(seg) == 2 && seg[0] == "tasks":
@@ -143,6 +185,15 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 		items := []any{}
 		for _, vm := range f.vms {
 			items = append(items, f.summary(vm))
+		}
+		// The cluster's view: the other members' VMs, each under its node's name.
+		for name, m := range f.members {
+			if m == f {
+				continue
+			}
+			for _, vm := range m.vms {
+				items = append(items, merge(m.summary(vm), map[string]any{"node": name}))
+			}
 		}
 		reply(w, 200, map[string]any{"items": items, "total": len(items)})
 	case p == "/vms" && r.Method == "POST":
@@ -240,7 +291,9 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 		reply(w, 202, merge(f.task(), map[string]any{"name": vm.Name}))
 	case len(seg) == 2 && seg[0] == "vms" && r.Method == "GET":
 		if vm := get(seg[1]); vm != nil {
-			reply(w, 200, f.summary(vm))
+			one := f.summary(vm)
+			delete(one, "node") // as the real one: a VM read alone does not say its node
+			reply(w, 200, one)
 		}
 	case len(seg) == 2 && seg[0] == "vms" && r.Method == "PATCH":
 		if vm := get(seg[1]); vm != nil {
@@ -280,6 +333,17 @@ func (f *fakeHyperliteAPI) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			vm.State = "stopped"
 			reply(w, 200, f.summary(vm))
+		case "migrate POST":
+			to := f.members[body["target_node"].(string)]
+			if to == nil || to == f {
+				fail(409, "no such destination")
+				return
+			}
+			delete(f.vms, vm.Name)
+			to.mu.Lock()
+			to.vms[vm.Name] = vm
+			to.mu.Unlock()
+			reply(w, 202, f.task())
 		case "rename POST":
 			if vm.State != "stopped" {
 				fail(409, "Stop the VM before renaming it")
