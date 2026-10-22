@@ -1,10 +1,14 @@
 package provider
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 // A value the server would store otherwise (a lowercased tag, a dropped value, a name it refuses) is refused at
@@ -178,4 +182,78 @@ resource "hyperlite_user" "u" {
 			})
 		})
 	}
+}
+
+// An ISO image is uploaded from a local file (streamed, multipart), renamed in place, uploaded again when its
+// source_hash changes, and imported without being uploaded again.
+func TestISOIsUploadedRenamedAndImported(t *testing.T) {
+	f, srv := newFakeHyperlite(t)
+	src := filepath.Join(t.TempDir(), "netinst.iso")
+	if err := os.WriteFile(src, []byte("an ISO image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := func(name, hash string) string {
+		return providerBlock(srv.URL, "hlt_ok") + `
+resource "hyperlite_iso" "d" {
+  name        = "` + name + `"
+  source      = "` + src + `"
+  source_hash = "` + hash + `"
+}`
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("debian-13.iso", "a"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_iso.d", "id", "debian-13.iso"),
+					func(*terraform.State) error {
+						if string(f.isos["debian-13.iso"]) != "an ISO image" {
+							return fmt.Errorf("the library holds %q", f.isos["debian-13.iso"])
+						}
+						return nil
+					},
+				),
+			},
+			{Config: config("debian-13.iso", "a"), PlanOnly: true},
+			{
+				Config: config("debian-13.1.iso", "a"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_iso.d", "id", "debian-13.1.iso"),
+					func(*terraform.State) error {
+						if f.called("POST /isos?") != 1 {
+							return fmt.Errorf("a rename uploads nothing")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: config("debian-13.1.iso", "b"),
+				Check: func(*terraform.State) error {
+					if f.called("POST /isos?") != 2 {
+						return fmt.Errorf("a new source_hash uploads the image again")
+					}
+					return nil
+				},
+			},
+			{ResourceName: "hyperlite_iso.d", ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"source", "source_hash"}},
+		},
+	})
+}
+
+func TestAnISONameTheServerRefusesIsRefusedAtPlan(t *testing.T) {
+	_, srv := newFakeHyperlite(t)
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{{
+			Config: providerBlock(srv.URL, "hlt_ok") + `
+resource "hyperlite_iso" "d" {
+  name   = "debian 13.img"
+  source = "/dev/null"
+}`,
+			PlanOnly:    true,
+			ExpectError: regexp.MustCompile("ending with\\s+`\\.iso`"),
+		}},
+	})
 }

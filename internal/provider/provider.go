@@ -172,6 +172,7 @@ func (p *hyperliteProvider) Resources(_ context.Context) []func() resource.Resou
 		newSnapshotResource,
 		newHAResource,
 		newTemplateResource,
+		newISOResource,
 	}
 }
 
