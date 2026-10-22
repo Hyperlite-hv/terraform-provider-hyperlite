@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -203,7 +204,11 @@ type templateModel struct {
 	SSHUser   types.String `tfsdk:"ssh_user"`
 	OS        types.String `tfsdk:"os"`
 	CreatedAt types.String `tfsdk:"created_at"`
+	Firmware  types.String `tfsdk:"firmware"`
+	Disks     types.List   `tfsdk:"disks"`
 }
+
+var templateDiskType = types.ObjectType{AttrTypes: map[string]attr.Type{"size_gb": types.Int64Type}}
 
 func newTemplateDataSource() datasource.DataSource { return &templateDataSource{} }
 
@@ -223,6 +228,11 @@ func (d *templateDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 			"ssh_user":   schema.StringAttribute{Computed: true, Description: "The account its system has, if known."},
 			"os":         schema.StringAttribute{Computed: true, Description: "Its system, if known."},
 			"created_at": schema.StringAttribute{Computed: true, Description: "When it was made."},
+			"firmware":   schema.StringAttribute{Computed: true, Description: "`bios`, `uefi` or `uefi_secure` (null on a Hyperlite before 1.2)."},
+			"disks": schema.ListAttribute{
+				ElementType: templateDiskType, Computed: true,
+				Description: "Its disk, as `size_gb` (rounded up): the smallest a VM deployed from it can have, since a disk only grows. Empty on a Hyperlite before 1.2.",
+			},
 		},
 	}
 }
@@ -241,6 +251,10 @@ func (d *templateDataSource) Read(ctx context.Context, req datasource.ReadReques
 		SSHUser   string `json:"ssh_user"`
 		OSLabel   string `json:"os_label"`
 		CreatedAt string `json:"created_at"`
+		Firmware  string `json:"firmware"`
+		Disks     []struct {
+			SizeGB int64 `json:"size_gb"`
+		} `json:"disks"`
 	}](ctx, d.client, "/templates")
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the templates", err.Error())
@@ -252,6 +266,12 @@ func (d *templateDataSource) Read(ctx context.Context, req datasource.ReadReques
 		}
 		m.ID, m.VCPU, m.MemoryMB = types.StringValue(t.Name), types.Int64Value(t.VCPU), types.Int64Value(t.MemoryMB)
 		m.VMSource, m.SSHUser, m.OS, m.CreatedAt = optional(t.VMSource), optional(t.SSHUser), optional(t.OSLabel), optional(t.CreatedAt)
+		m.Firmware = optional(t.Firmware)
+		disks := make([]attr.Value, len(t.Disks))
+		for i, disk := range t.Disks {
+			disks[i] = types.ObjectValueMust(templateDiskType.AttrTypes, map[string]attr.Value{"size_gb": types.Int64Value(disk.SizeGB)})
+		}
+		m.Disks = types.ListValueMust(templateDiskType, disks)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 		return
 	}

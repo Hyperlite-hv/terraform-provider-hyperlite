@@ -39,7 +39,8 @@ func fakeHyperlite(t *testing.T, api int) *httptest.Server {
 			answer(w, map[string]any{"name": "lan", "uuid": "u-1", "type": "nat", "active": true, "autostart": true, "bridge": "virbr1",
 				"dhcp": true, "vlan": false, "network": map[string]any{"address": "10.0.20.1", "netmask": "255.255.255.0"}})
 		case "/api/v1/templates":
-			answer(w, map[string]any{"items": []any{map[string]any{"name": "debian-12-base", "vcpu": 2, "memory_mb": 2048, "vm_source": "base", "ssh_user": "debian", "os_label": "Debian 12"}}, "total": 1})
+			answer(w, map[string]any{"items": []any{map[string]any{"name": "debian-12-base", "vcpu": 2, "memory_mb": 2048, "vm_source": "base", "ssh_user": "debian", "os_label": "Debian 12",
+				"firmware": "uefi", "disks": []any{map[string]any{"size_gb": 3}}}}, "total": 1})
 		case "/api/v1/vms/web":
 			answer(w, map[string]any{"name": "web", "uuid": "11111111-2222-4333-8444-555555555555", "state": "active", "vcpu": 2, "memory_mb": 2048,
 				"ip": "10.0.20.11", "firmware": "uefi"})
@@ -101,6 +102,8 @@ data "hyperlite_iso" "debian" { name = "debian-13.iso" }
 				resource.TestCheckResourceAttr("data.hyperlite_network.lan", "type", "nat"),
 				resource.TestCheckResourceAttr("data.hyperlite_template.debian", "memory_mb", "2048"),
 				resource.TestCheckResourceAttr("data.hyperlite_template.debian", "ssh_user", "debian"),
+				resource.TestCheckResourceAttr("data.hyperlite_template.debian", "firmware", "uefi"),
+				resource.TestCheckResourceAttr("data.hyperlite_template.debian", "disks.0.size_gb", "3"),
 				resource.TestCheckResourceAttr("data.hyperlite_vm.web", "id", "11111111-2222-4333-8444-555555555555"),
 				resource.TestCheckResourceAttr("data.hyperlite_vm.web", "node", "local"),
 				resource.TestCheckResourceAttr("data.hyperlite_vm.web", "network_interface.0.mac", "52:54:00:aa:bb:01"),
