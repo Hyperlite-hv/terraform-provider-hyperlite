@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	stdpath "path"
 	"regexp"
 	"sort"
@@ -237,10 +238,10 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 			"customize": schema.SingleNestedBlock{
 				Description: "The guest's customisation, written on its cloud-init drive as vSphere's `customize` and Proxmox VE's cloud-init options are: before its first boot, then at its next boot after a change.",
 				Attributes: map[string]schema.Attribute{
-					"hostname":   schema.StringAttribute{Optional: true, Description: "Host name (the VM's name when absent)."},
-					"domain":     schema.StringAttribute{Optional: true, Description: "Domain, for the FQDN."},
-					"dns":        schema.ListAttribute{ElementType: types.StringType, Optional: true, Description: "Resolvers."},
-					"dns_search": schema.ListAttribute{ElementType: types.StringType, Optional: true, Description: "Search domains."},
+					"hostname":   schema.StringAttribute{Optional: true, Validators: []validator.String{hostLabel()}, Description: "Host name (the VM's name when absent)."},
+					"domain":     schema.StringAttribute{Optional: true, Validators: []validator.String{domainName()}, Description: "Domain, for the FQDN."},
+					"dns":        schema.ListAttribute{ElementType: types.StringType, Optional: true, Validators: []validator.List{listvalidator.ValueStringsAre(ipAddress())}, Description: "Resolvers."},
+					"dns_search": schema.ListAttribute{ElementType: types.StringType, Optional: true, Validators: []validator.List{listvalidator.ValueStringsAre(domainName())}, Description: "Search domains."},
 					"user_data":  schema.StringAttribute{Optional: true, Description: "A cloud-config added to Hyperlite's own (packages, runcmd, write_files...); its account and host-name keys are refused."},
 				},
 				Blocks: map[string]schema.Block{
@@ -248,8 +249,8 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 						Description: "A static configuration of one interface; the others use DHCP.",
 						NestedObject: schema.NestedBlockObject{Attributes: map[string]schema.Attribute{
 							"interface": schema.Int64Attribute{Optional: true, Description: "The index of the `network_interface` (0, the first, when absent)."},
-							"addresses": schema.ListAttribute{ElementType: types.StringType, Required: true, Description: "Addresses with their prefix: `10.0.20.11/24`."},
-							"gateway":   schema.StringAttribute{Optional: true, Description: "Default gateway."},
+							"addresses": schema.ListAttribute{ElementType: types.StringType, Required: true, Validators: []validator.List{listvalidator.SizeAtLeast(1), listvalidator.ValueStringsAre(ipWithPrefix())}, Description: "Addresses with their prefix: `10.0.20.11/24`."},
+							"gateway":   schema.StringAttribute{Optional: true, Validators: []validator.String{ipAddress()}, Description: "Default gateway."},
 						}},
 					},
 				},
@@ -327,6 +328,23 @@ func (r *vmResource) ValidateConfig(ctx context.Context, req resource.ValidateCo
 					"Interface configured twice", fmt.Sprintf("Interface %d has two `network` blocks.", idx))
 			}
 			seen[idx] = true
+			if gw, err := netip.ParseAddr(n.Gateway.ValueString()); err == nil && !n.Addresses.IsUnknown() {
+				var addrs []types.String
+				n.Addresses.ElementsAs(ctx, &addrs, false)
+				inside := false
+				for _, a := range addrs {
+					if a.IsUnknown() {
+						inside = true // known at apply only: the server checks it
+					}
+					if p, err := netip.ParsePrefix(a.ValueString()); err == nil && p.Masked().Contains(gw) {
+						inside = true
+					}
+				}
+				if !inside {
+					resp.Diagnostics.AddAttributeError(path.Root("customize").AtName("network").AtListIndex(i).AtName("gateway"),
+						"Gateway out of reach", "The gateway must be inside the network of one of the interface's addresses.")
+				}
+			}
 		}
 	}
 }
