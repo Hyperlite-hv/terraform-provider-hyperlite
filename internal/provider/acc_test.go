@@ -489,7 +489,7 @@ func TestAccTemplate(t *testing.T) {
 				return err
 			}
 			for _, n := range []string{"tfacc-tpl", "tfacc-tpl2"} {
-				if _, err := (&templateResource{configured{client: accClient()}}).template(context.Background(), n); !errors.Is(err, errNotFound) {
+				if _, err := (&templateResource{}).template(context.Background(), accClient(), n); !errors.Is(err, errNotFound) {
 					return fmt.Errorf("the template %s is still there after the destroy (%v)", n, err)
 				}
 			}

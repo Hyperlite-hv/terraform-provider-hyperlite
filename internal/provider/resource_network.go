@@ -35,6 +35,7 @@ type networkResource struct{ configured }
 
 type networkResourceModel struct {
 	ID        types.String `tfsdk:"id"`
+	Node      types.String `tfsdk:"node"`
 	Name      types.String `tfsdk:"name"`
 	Mode      types.String `tfsdk:"mode"`
 	Bridge    types.String `tfsdk:"bridge"`
@@ -58,6 +59,7 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	resp.Schema = schema.Schema{
 		Description: "A virtual network of the node: NAT or isolated with Hyperlite's DHCP, or a bridge onto a host bridge.",
 		Attributes: map[string]schema.Attribute{
+			"node": nodeAttribute(&r.configured, "network"),
 			"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The network's name."},
 			"name": schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)}, Description: "Its name. A change renames it."},
 			"mode": schema.StringAttribute{
@@ -129,6 +131,10 @@ func (r *networkResource) Create(ctx context.Context, req resource.CreateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	body := map[string]any{"name": m.Name.ValueString(), "mode": m.Mode.ValueString()}
 	if m.Mode.ValueString() == "bridge" {
 		body["bridge_name"] = m.Bridge.ValueString()
@@ -141,14 +147,14 @@ func (r *networkResource) Create(ctx context.Context, req resource.CreateRequest
 			body["dhcp_start"], body["dhcp_end"] = m.DHCPStart.ValueString(), m.DHCPEnd.ValueString()
 		}
 	}
-	if err := r.client.API.Call(ctx, "POST", "/networks", body, nil); err != nil {
+	if err := c.call(ctx, "POST", "/networks", body, nil); err != nil {
 		resp.Diagnostics.AddError("Cannot create the network", err.Error())
 		return
 	}
 	m.ID = m.Name
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), m.ID)...)
 	if !m.Autostart.ValueBool() {
-		if err := r.client.API.Call(ctx, "PUT", "/networks/"+esc(m.Name.ValueString())+"/autostart", map[string]any{"autostart": false}, nil); err != nil {
+		if err := c.call(ctx, "PUT", "/networks/"+esc(m.Name.ValueString())+"/autostart", map[string]any{"autostart": false}, nil); err != nil {
 			resp.Diagnostics.AddError("The network was made but its start with the node could not be set", err.Error())
 			return
 		}
@@ -182,14 +188,14 @@ type networkDetail struct {
 
 func (c *Client) network(ctx context.Context, name string) (*networkDetail, error) {
 	var n networkDetail
-	if err := c.API.Call(ctx, "GET", "/networks/"+esc(name), nil, &n); err != nil {
+	if err := c.call(ctx, "GET", "/networks/"+esc(name), nil, &n); err != nil {
 		return nil, notFound(err)
 	}
 	return &n, nil
 }
 
 func (r *networkResource) readInto(ctx context.Context, m *networkResourceModel, diags interface{ AddError(string, string) }) bool {
-	n, err := r.client.network(ctx, m.ID.ValueString())
+	n, err := r.client.at(memberOf(m.Node)).network(ctx, m.ID.ValueString())
 	if err != nil {
 		if !errors.Is(err, errNotFound) {
 			diags.AddError("Cannot read the network", err.Error())
@@ -221,6 +227,9 @@ func (r *networkResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
 	if !r.readInto(ctx, &m, &resp.Diagnostics) {
 		if !resp.Diagnostics.HasError() {
 			resp.State.RemoveResource(ctx)
@@ -237,10 +246,10 @@ func (r *networkResource) Update(ctx context.Context, req resource.UpdateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	c := r.client
+	c := r.client.at(memberOf(state.Node))
 	name := state.Name.ValueString()
 	if plan.Name.ValueString() != name {
-		if err := c.API.Call(ctx, "POST", "/networks/"+esc(name)+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
+		if err := c.call(ctx, "POST", "/networks/"+esc(name)+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the network", err.Error())
 			return
 		}
@@ -257,7 +266,7 @@ func (r *networkResource) Update(ctx context.Context, req resource.UpdateRequest
 		var out struct {
 			NeedsRestart bool `json:"needs_restart"`
 		}
-		if err := c.API.Call(ctx, "PATCH", "/networks/"+esc(name), body, &out); err != nil {
+		if err := c.call(ctx, "PATCH", "/networks/"+esc(name), body, &out); err != nil {
 			resp.Diagnostics.AddError("Cannot change the network", err.Error())
 			return
 		}
@@ -267,7 +276,7 @@ func (r *networkResource) Update(ctx context.Context, req resource.UpdateRequest
 		}
 	}
 	if plan.Autostart.ValueBool() != state.Autostart.ValueBool() {
-		if err := c.API.Call(ctx, "PUT", "/networks/"+esc(name)+"/autostart", map[string]any{"autostart": plan.Autostart.ValueBool()}, nil); err != nil {
+		if err := c.call(ctx, "PUT", "/networks/"+esc(name)+"/autostart", map[string]any{"autostart": plan.Autostart.ValueBool()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot set the network's start with the node", err.Error())
 			return
 		}
@@ -283,13 +292,17 @@ func (r *networkResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.API.Call(ctx, "DELETE", "/networks/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	c := r.client.at(memberOf(m.Node))
+	if err := c.call(ctx, "DELETE", "/networks/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the network", err.Error())
 	}
 }
 
+// ImportState takes `<network>`, or `<node>/<network>`.
 func (r *networkResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if id := importOn(ctx, req, resp, "<network>"); id != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id[0])...)
+	}
 }
 
 // ---- hyperlite_network_reservation ----
@@ -298,6 +311,7 @@ type reservationResource struct{ configured }
 
 type reservationModel struct {
 	ID      types.String `tfsdk:"id"`
+	Node    types.String `tfsdk:"node"`
 	Network types.String `tfsdk:"network"`
 	MAC     types.String `tfsdk:"mac"`
 	IP      types.String `tfsdk:"ip"`
@@ -315,6 +329,7 @@ func (r *reservationResource) Schema(_ context.Context, _ resource.SchemaRequest
 	resp.Schema = schema.Schema{
 		Description: "A DHCP reservation of a NAT or isolated network: the address a MAC address always gets.",
 		Attributes: map[string]schema.Attribute{
+			"node":    nodeAttribute(&r.configured, "reservation's network"),
 			"id":      schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, Description: "`<network>/<mac>`."},
 			"network": schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The network."},
 			"mac":     schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.RegexMatches(macRe, "a MAC address: 52:54:00:12:34:56")}, Description: "The MAC address (a `hyperlite_vm`'s `network_interface.N.mac`)."},
@@ -330,11 +345,15 @@ func (r *reservationResource) Create(ctx context.Context, req resource.CreateReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	body := map[string]any{"mac": strings.ToLower(m.MAC.ValueString()), "ip": m.IP.ValueString()}
 	if !m.Name.IsNull() {
 		body["name"] = m.Name.ValueString()
 	}
-	if err := r.client.API.Call(ctx, "POST", "/networks/"+esc(m.Network.ValueString())+"/reservations", body, nil); err != nil {
+	if err := c.call(ctx, "POST", "/networks/"+esc(m.Network.ValueString())+"/reservations", body, nil); err != nil {
 		resp.Diagnostics.AddError("Cannot reserve the address", err.Error())
 		return
 	}
@@ -348,8 +367,12 @@ func (r *reservationResource) Read(ctx context.Context, req resource.ReadRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
+	c := r.client.at(memberOf(m.Node))
 	network, mac, _ := strings.Cut(m.ID.ValueString(), "/")
-	n, err := r.client.network(ctx, network)
+	n, err := c.network(ctx, network)
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -382,19 +405,20 @@ func (r *reservationResource) Delete(ctx context.Context, req resource.DeleteReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	c := r.client.at(memberOf(m.Node))
 	network, mac, _ := strings.Cut(m.ID.ValueString(), "/")
-	if err := r.client.API.Call(ctx, "DELETE", "/networks/"+esc(network)+"/reservations/"+esc(mac), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := c.call(ctx, "DELETE", "/networks/"+esc(network)+"/reservations/"+esc(mac), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot remove the reservation", err.Error())
 	}
 }
 
-// ImportState takes `<network>/<mac>`.
+// ImportState takes `<network>/<mac>`, or `<node>/<network>/<mac>`.
 func (r *reservationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	network, mac, ok := strings.Cut(req.ID, "/")
-	if !ok || network == "" || mac == "" {
-		resp.Diagnostics.AddError("Import id", "Give `<network>/<mac>`.")
+	id := importOn(ctx, req, resp, "<network>/<mac>")
+	if id == nil {
 		return
 	}
+	network, mac := id[0], id[1]
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), network+"/"+strings.ToLower(mac))...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("mac"), strings.ToLower(mac))...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("network"), network)...)

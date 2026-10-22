@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -134,6 +135,61 @@ func (p *hyperliteProvider) Configure(ctx context.Context, req provider.Configur
 type Client struct {
 	API     *hyperlite.Client
 	Version string
+	// node is the member of the cluster every call names (?node=): empty for the node the provider talks to.
+	node string
+	// self is the name the node the provider talks to has in its cluster (GET /health): lists call its objects
+	// "local", and a configuration may name it.
+	self string
+}
+
+// sameNode tells whether two `node` values name the same member: "", "local" and the provider's own node's name are
+// one node.
+func (c *Client) sameNode(a, b string) bool { return c.canonical(a) == c.canonical(b) }
+
+func (c *Client) canonical(node string) string {
+	if node == "local" || (node != "" && node == c.self) {
+		return ""
+	}
+	return node
+}
+
+// at is the client of one member's objects: each call names that member, which does the work itself (Hyperlite sends
+// the request on, with the same token's user), and a task is followed there. "" or "local": the node the provider
+// talks to.
+func (c *Client) at(node string) *Client {
+	node = c.canonical(node)
+	if node == c.node {
+		return c
+	}
+	cc := *c
+	cc.node = node
+	return &cc
+}
+
+// call is every API call of the provider: the route, on this client's member.
+func (c *Client) call(ctx context.Context, method, path string, body, out any) error {
+	if c.node != "" && c.self == "" && !tookNode(method, path) {
+		return fmt.Errorf("this Hyperlite (%s) would do this on its own node, not on %s: `node` needs Hyperlite 1.3 or later "+
+			"for this object; leave it out or point the provider at %s", c.Version, c.node, c.node)
+	}
+	return c.API.Call(ctx, method, withNode(path, c.node), body, out)
+}
+
+// before13 is what a Hyperlite before 1.3, which does not say its node's name, already did on the node `?node=`
+// names (docs/api/openapi-v1.json of 1.2.0). It ignores the parameter everywhere else and would act on itself.
+var before13 = regexp.MustCompile(`^(GET /vms(/[^/]+(/(boot|disks|network))?)?|PUT /vms/[^/]+/boot|` +
+	`POST /vms/[^/]+/(start|stop|restart|rename|migrate)|DELETE /vms/[^/]+|GET /storage(/[^/]+)?|POST /storage|` +
+	`DELETE /storage/[^/]+|DELETE /isos/[^/]+|GET /tasks)$`)
+
+func tookNode(method, path string) bool {
+	route, _, _ := strings.Cut(path, "?")
+	return before13.MatchString(method + " " + route)
+}
+
+// waitTask follows a task of this client's member.
+func (c *Client) waitTask(ctx context.Context, id string) error {
+	_, err := c.API.WaitTask(ctx, id, hyperlite.WaitOptions{Node: c.node})
+	return err
 }
 
 // connect checks, before any plan, that the server speaks API v1 and that the token is accepted, so a wrong address
@@ -152,7 +208,7 @@ func connect(ctx context.Context, c *hyperlite.Client) (*Client, error) {
 	if err := c.Call(ctx, "GET", "/auth/me", nil, &me); err != nil {
 		return nil, fmt.Errorf("the API token is not accepted: %w", err)
 	}
-	return &Client{API: c, Version: health.HyperliteVersion}, nil
+	return &Client{API: c, Version: health.HyperliteVersion, self: health.Node}, nil
 }
 
 func (p *hyperliteProvider) Resources(_ context.Context) []func() resource.Resource {

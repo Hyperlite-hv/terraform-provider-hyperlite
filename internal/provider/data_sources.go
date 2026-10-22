@@ -30,7 +30,7 @@ func list[T any](ctx context.Context, c *Client, path string) ([]T, error) {
 	var page struct {
 		Items []T `json:"items"`
 	}
-	if err := c.API.Call(ctx, "GET", path, nil, &page); err != nil {
+	if err := c.call(ctx, "GET", path, nil, &page); err != nil {
 		return nil, err
 	}
 	return page.Items, nil
@@ -109,6 +109,7 @@ type networkDataSource struct{ base }
 
 type networkModel struct {
 	Name      types.String `tfsdk:"name"`
+	Node      types.String `tfsdk:"node"`
 	ID        types.String `tfsdk:"id"`
 	UUID      types.String `tfsdk:"uuid"`
 	Type      types.String `tfsdk:"type"`
@@ -135,6 +136,7 @@ func (d *networkDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 		Description: "A virtual network, to connect VM interfaces to it.",
 		Attributes: map[string]schema.Attribute{
 			"name":      schema.StringAttribute{Required: true, Description: "The network's name."},
+			"node":      dataNode("network"),
 			"id":        computed("The network's name."),
 			"uuid":      computed("The network's libvirt UUID."),
 			"type":      computed("`nat`, `isolated`, `bridge`, `macvtap`..."),
@@ -169,10 +171,11 @@ func (d *networkDataSource) Read(ctx context.Context, req datasource.ReadRequest
 			Netmask string `json:"netmask"`
 		} `json:"network"`
 	}
-	if err := d.client.API.Call(ctx, "GET", "/networks/"+url.PathEscape(m.Name.ValueString()), nil, &n); err != nil {
+	if err := d.client.at(memberOf(m.Node)).call(ctx, "GET", "/networks/"+url.PathEscape(m.Name.ValueString()), nil, &n); err != nil {
 		resp.Diagnostics.AddError("Cannot read the network", err.Error())
 		return
 	}
+	m.Node = here(m.Node)
 	m.ID, m.UUID, m.Type = types.StringValue(n.Name), types.StringValue(n.UUID), types.StringValue(n.Type)
 	m.Active, m.Autostart, m.DHCP, m.VLAN = types.BoolValue(n.Active), types.BoolValue(n.Autostart), types.BoolValue(n.DHCP), types.BoolValue(n.VLAN)
 	m.Bridge = optional(n.Bridge)
@@ -181,6 +184,22 @@ func (d *networkDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		m.Address, m.Netmask = optional(n.Network.Address), optional(n.Network.Netmask)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+// dataNode is the `node` of a data source: which member holds the object, as on the resource.
+func dataNode(what string) schema.StringAttribute {
+	return schema.StringAttribute{
+		Optional: true, Computed: true,
+		Description: "The cluster member that holds the " + what + ", as on its resource (`local` when absent: the node the provider talks to).",
+	}
+}
+
+// here is `local` for a node left out: the state says where the object was read.
+func here(node types.String) types.String {
+	if node.IsNull() || node.IsUnknown() || node.ValueString() == "" {
+		return types.StringValue("local")
+	}
+	return node
 }
 
 // optional is null for an empty value: what the API leaves out is not an empty string in the state.
@@ -197,6 +216,7 @@ type templateDataSource struct{ base }
 
 type templateModel struct {
 	Name      types.String `tfsdk:"name"`
+	Node      types.String `tfsdk:"node"`
 	ID        types.String `tfsdk:"id"`
 	VCPU      types.Int64  `tfsdk:"vcpu"`
 	MemoryMB  types.Int64  `tfsdk:"memory_mb"`
@@ -221,6 +241,7 @@ func (d *templateDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 		Description: "A VM template, to size and make VMs from it.",
 		Attributes: map[string]schema.Attribute{
 			"name":       schema.StringAttribute{Required: true, Description: "The template's name."},
+			"node":       dataNode("template"),
 			"id":         schema.StringAttribute{Computed: true, Description: "The template's name."},
 			"vcpu":       schema.Int64Attribute{Computed: true, Description: "Virtual CPUs of the VM it was made from."},
 			"memory_mb":  schema.Int64Attribute{Computed: true, Description: "Memory of the VM it was made from, in MB."},
@@ -255,7 +276,7 @@ func (d *templateDataSource) Read(ctx context.Context, req datasource.ReadReques
 		Disks     []struct {
 			SizeGB int64 `json:"size_gb"`
 		} `json:"disks"`
-	}](ctx, d.client, "/templates")
+	}](ctx, d.client.at(memberOf(m.Node)), "/templates")
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the templates", err.Error())
 		return
@@ -264,6 +285,7 @@ func (d *templateDataSource) Read(ctx context.Context, req datasource.ReadReques
 		if t.Name != m.Name.ValueString() {
 			continue
 		}
+		m.Node = here(m.Node)
 		m.ID, m.VCPU, m.MemoryMB = types.StringValue(t.Name), types.Int64Value(t.VCPU), types.Int64Value(t.MemoryMB)
 		m.VMSource, m.SSHUser, m.OS, m.CreatedAt = optional(t.VMSource), optional(t.SSHUser), optional(t.OSLabel), optional(t.CreatedAt)
 		m.Firmware = optional(t.Firmware)

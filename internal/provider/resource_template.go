@@ -25,6 +25,7 @@ type templateResource struct{ configured }
 
 type templateResourceModel struct {
 	ID        types.String `tfsdk:"id"`
+	Node      types.String `tfsdk:"node"`
 	Name      types.String `tfsdk:"name"`
 	VM        types.String `tfsdk:"vm"`
 	KeepVM    types.Bool   `tfsdk:"keep_vm"`
@@ -49,7 +50,8 @@ func (r *templateResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		Description: "A template made from a stopped VM, to deploy VMs from it (`hyperlite_vm.clone.template`).",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The template's name."},
+			"node": nodeAttribute(&r.configured, "template"),
+			"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The template's name."},
 			"name": schema.StringAttribute{
 				Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)},
 				Description: "Its name. A change renames it.",
@@ -93,8 +95,8 @@ type templateWire struct {
 }
 
 // template reads one template by its name (GET /templates lists them all).
-func (r *templateResource) template(ctx context.Context, name string) (*templateWire, error) {
-	templates, err := list[templateWire](ctx, r.client, "/templates")
+func (r *templateResource) template(ctx context.Context, c *Client, name string) (*templateWire, error) {
+	templates, err := list[templateWire](ctx, c, "/templates")
 	if err != nil {
 		return nil, err
 	}
@@ -121,20 +123,24 @@ func (r *templateResource) Create(ctx context.Context, req resource.CreateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	vm := m.VM.ValueString()
 	body := map[string]any{"template_name": m.Name.ValueString(), "keep_vm": m.KeepVM.ValueBool()}
-	err := r.client.whileStopped(ctx, vm, duration(m.Shutdown, 3*time.Minute), m.ForceStop.ValueBool(), func() (string, error) {
+	err := c.whileStopped(ctx, vm, duration(m.Shutdown, 3*time.Minute), m.ForceStop.ValueBool(), func() (string, error) {
 		after := "" // converted: the VM is gone, nothing to start again
 		if m.KeepVM.ValueBool() {
 			after = vm
 		}
-		return after, r.client.runTask(ctx, "POST", "/templates/from-vm/"+esc(vm), body)
+		return after, c.runTask(ctx, "POST", "/templates/from-vm/"+esc(vm), body)
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot make the template", err.Error())
 		return
 	}
-	t, err := r.template(ctx, m.Name.ValueString())
+	t, err := r.template(ctx, c, m.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the template made", err.Error())
 		return
@@ -149,7 +155,11 @@ func (r *templateResource) Read(ctx context.Context, req resource.ReadRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	t, err := r.template(ctx, m.ID.ValueString())
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
+	c := r.client.at(memberOf(m.Node))
+	t, err := r.template(ctx, c, m.ID.ValueString())
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -176,15 +186,16 @@ func (r *templateResource) Update(ctx context.Context, req resource.UpdateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	c := r.client.at(memberOf(state.Node))
 	// The name is the only property of the template changed in place; shutdown_timeout and force_stop are the
 	// provider's own.
 	if !plan.Name.Equal(state.Name) {
-		if err := r.client.API.Call(ctx, "POST", "/templates/"+esc(state.ID.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
+		if err := c.call(ctx, "POST", "/templates/"+esc(state.ID.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the template", err.Error())
 			return
 		}
 	}
-	t, err := r.template(ctx, plan.Name.ValueString())
+	t, err := r.template(ctx, c, plan.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the renamed template", err.Error())
 		return
@@ -196,12 +207,19 @@ func (r *templateResource) Update(ctx context.Context, req resource.UpdateReques
 func (r *templateResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m templateResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	err := notFound(r.client.API.Call(ctx, "DELETE", "/templates/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	c := r.client.at(memberOf(m.Node))
+	err := notFound(c.call(ctx, "DELETE", "/templates/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil))
 	if err != nil && !errors.Is(err, errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the template", err.Error())
 	}
 }
 
+// ImportState takes `<template>`, or `<node>/<template>`.
 func (r *templateResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if id := importOn(ctx, req, resp, "<template>"); id != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id[0])...)
+	}
 }

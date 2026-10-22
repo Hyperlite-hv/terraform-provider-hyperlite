@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Hyperlite-hv/Hyperlite/cli/hyperlite"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
 // The calls of API v1 the resources make, typed. Each one names the route it uses; the shapes are those of Hyperlite's
@@ -40,6 +43,22 @@ func withNode(path, node string) string {
 	return path + sep + "node=" + url.QueryEscape(node)
 }
 
+// importOn reads an import ID: the resource's own form, or `<node>/` and that form for an object on another member of
+// the cluster (as `<node>/<name>` for a VM). It sets `node` and answers the form's parts, or nil after an error.
+func importOn(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse, form string) []string {
+	want := strings.Count(form, "/") + 1
+	parts := strings.Split(req.ID, "/")
+	if len(parts) == want+1 {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("node"), parts[0])...)
+		parts = parts[1:]
+	}
+	if len(parts) != want || slices.Contains(parts, "") {
+		resp.Diagnostics.AddError("Import id", "Give `"+form+"`, or `<node>/"+form+"` for an object on another member of the cluster.")
+		return nil
+	}
+	return parts
+}
+
 // ---- VMs ----
 
 type vmSummary struct {
@@ -58,7 +77,7 @@ func (c *Client) findVM(ctx context.Context, uuid string) (*vmSummary, error) {
 	var page struct {
 		Items []vmSummary `json:"items"`
 	}
-	if err := c.API.Call(ctx, "GET", "/vms?cluster=true", nil, &page); err != nil {
+	if err := c.call(ctx, "GET", "/vms?cluster=true", nil, &page); err != nil {
 		return nil, err
 	}
 	for i := range page.Items {
@@ -75,12 +94,15 @@ func (c *Client) findVM(ctx context.Context, uuid string) (*vmSummary, error) {
 
 // vmByName reads one VM (GET /vms/{name}).
 func (c *Client) vmByName(ctx context.Context, name, node string) (*vmSummary, error) {
+	if node != "" {
+		c = c.at(node)
+	}
 	var vm vmSummary
-	if err := c.API.Call(ctx, "GET", withNode("/vms/"+esc(name), node), nil, &vm); err != nil {
+	if err := c.call(ctx, "GET", "/vms/"+esc(name), nil, &vm); err != nil {
 		return nil, notFound(err)
 	}
 	if vm.Node == "" {
-		vm.Node = node
+		vm.Node = c.node
 	}
 	if vm.Node == "" {
 		vm.Node = "local"
@@ -99,10 +121,13 @@ type vmDisk struct {
 
 // vmDisks is the VM's hard disks (not its CD drives), in the order of its definition (GET /vms/{name}/disks).
 func (c *Client) vmDisks(ctx context.Context, name, node string) ([]vmDisk, error) {
+	if node != "" {
+		c = c.at(node)
+	}
 	var page struct {
 		Items []vmDisk `json:"items"`
 	}
-	if err := c.API.Call(ctx, "GET", withNode("/vms/"+esc(name)+"/disks", node), nil, &page); err != nil {
+	if err := c.call(ctx, "GET", "/vms/"+esc(name)+"/disks", nil, &page); err != nil {
 		return nil, notFound(err)
 	}
 	out := make([]vmDisk, 0, len(page.Items))
@@ -121,10 +146,13 @@ type vmInterface struct {
 }
 
 func (c *Client) vmInterfaces(ctx context.Context, name, node string) ([]vmInterface, error) {
+	if node != "" {
+		c = c.at(node)
+	}
 	var net struct {
 		Interfaces []vmInterface `json:"interfaces"`
 	}
-	if err := c.API.Call(ctx, "GET", withNode("/vms/"+esc(name)+"/network", node), nil, &net); err != nil {
+	if err := c.call(ctx, "GET", "/vms/"+esc(name)+"/network", nil, &net); err != nil {
 		return nil, notFound(err)
 	}
 	return net.Interfaces, nil
@@ -150,7 +178,7 @@ type cloudInitState struct {
 
 func (c *Client) vmCloudInit(ctx context.Context, name string) (*cloudInitState, error) {
 	var ci cloudInitState
-	if err := c.API.Call(ctx, "GET", "/vms/"+esc(name)+"/cloud-init", nil, &ci); err != nil {
+	if err := c.call(ctx, "GET", "/vms/"+esc(name)+"/cloud-init", nil, &ci); err != nil {
 		return nil, notFound(err)
 	}
 	return &ci, nil
@@ -170,7 +198,7 @@ type cloudInitUpdate struct {
 }
 
 func (c *Client) putCloudInit(ctx context.Context, name string, body cloudInitUpdate) error {
-	return c.API.Call(ctx, "PUT", "/vms/"+esc(name)+"/cloud-init", body, nil)
+	return c.call(ctx, "PUT", "/vms/"+esc(name)+"/cloud-init", body, nil)
 }
 
 type bootSetting struct {
@@ -178,15 +206,18 @@ type bootSetting struct {
 }
 
 func (c *Client) vmBoot(ctx context.Context, name, node string) (*bootSetting, error) {
+	if node != "" {
+		c = c.at(node)
+	}
 	var b bootSetting
-	if err := c.API.Call(ctx, "GET", withNode("/vms/"+esc(name)+"/boot", node), nil, &b); err != nil {
+	if err := c.call(ctx, "GET", "/vms/"+esc(name)+"/boot", nil, &b); err != nil {
 		return nil, notFound(err)
 	}
 	return &b, nil
 }
 
 func (c *Client) putBoot(ctx context.Context, name string, autostart bool) error {
-	return c.API.Call(ctx, "PUT", "/vms/"+esc(name)+"/boot", map[string]any{"autostart": autostart}, nil)
+	return c.call(ctx, "PUT", "/vms/"+esc(name)+"/boot", map[string]any{"autostart": autostart}, nil)
 }
 
 type objectMeta struct {
@@ -195,8 +226,11 @@ type objectMeta struct {
 }
 
 func (c *Client) vmMeta(ctx context.Context, name, node string) (*objectMeta, error) {
+	if node != "" {
+		c = c.at(node)
+	}
 	var m objectMeta
-	if err := c.API.Call(ctx, "GET", withNode("/meta/vm/"+esc(name), node), nil, &m); err != nil {
+	if err := c.call(ctx, "GET", "/meta/vm/"+esc(name), nil, &m); err != nil {
 		return nil, notFound(err)
 	}
 	if m.Tags == nil {
@@ -207,7 +241,7 @@ func (c *Client) vmMeta(ctx context.Context, name, node string) (*objectMeta, er
 }
 
 func (c *Client) putMeta(ctx context.Context, name string, meta objectMeta) error {
-	return c.API.Call(ctx, "PUT", "/meta/vm/"+esc(name), meta, nil)
+	return c.call(ctx, "PUT", "/meta/vm/"+esc(name), meta, nil)
 }
 
 // startedTask is the answer of a route called with ?wait=false (202).
@@ -224,18 +258,17 @@ func (c *Client) runTask(ctx context.Context, method, path string, body any) err
 		sep = "&"
 	}
 	var started startedTask
-	if err := c.API.Call(ctx, method, path+sep+"wait=false", body, &started); err != nil {
+	if err := c.call(ctx, method, path+sep+"wait=false", body, &started); err != nil {
 		return err
 	}
 	if started.TaskID == "" {
 		return fmt.Errorf("%s %s answered without a task: this Hyperlite does not know ?wait=false (1.2 or later is needed)", method, path)
 	}
-	_, err := c.API.WaitTask(ctx, started.TaskID, hyperlite.WaitOptions{})
-	return err
+	return c.waitTask(ctx, started.TaskID)
 }
 
 func (c *Client) startVM(ctx context.Context, name string) error {
-	return c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/start", nil, nil)
+	return c.call(ctx, "POST", "/vms/"+esc(name)+"/start", nil, nil)
 }
 
 // stopVM shuts the guest down cleanly and waits until it is stopped, at most `grace`; then, when `force`, stops it
@@ -248,7 +281,7 @@ func (c *Client) stopVM(ctx context.Context, name string, grace time.Duration, f
 	if vm.State == "stopped" {
 		return nil
 	}
-	if err := c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/stop", nil, nil); err != nil && !isConflict(err) {
+	if err := c.call(ctx, "POST", "/vms/"+esc(name)+"/stop", nil, nil); err != nil && !isConflict(err) {
 		return err
 	}
 	if c.waitState(ctx, name, "stopped", grace) == nil {
@@ -257,7 +290,7 @@ func (c *Client) stopVM(ctx context.Context, name string, grace time.Duration, f
 	if !force {
 		return fmt.Errorf("the VM %q did not shut down within %s (force_stop is false)", name, grace)
 	}
-	if err := c.API.Call(ctx, "POST", "/vms/"+esc(name)+"/stop?force=true", nil, nil); err != nil && !isConflict(err) {
+	if err := c.call(ctx, "POST", "/vms/"+esc(name)+"/stop?force=true", nil, nil); err != nil && !isConflict(err) {
 		return err
 	}
 	return c.waitState(ctx, name, "stopped", time.Minute)
@@ -347,7 +380,7 @@ func (c *Client) poolsOf(ctx context.Context, vm string) ([]int64, error) {
 			VMs []string `json:"vms"`
 		} `json:"items"`
 	}
-	if err := c.API.Call(ctx, "GET", "/pools", nil, &page); err != nil {
+	if err := c.call(ctx, "GET", "/pools", nil, &page); err != nil {
 		return nil, err
 	}
 	var out []int64

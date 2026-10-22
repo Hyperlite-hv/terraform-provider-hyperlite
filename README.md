@@ -40,6 +40,18 @@ Create the token in Hyperlite, **Account security > API tokens**. The provider c
 API v1 and that the token is accepted. A certificate the system does not trust (self-signed, internal CA) is pinned
 with `fingerprint`, its SHA-256 as `hyperlite login` shows it.
 
+## Clusters
+
+The provider talks to one node; every object a node holds (VM, template, network and reservation, storage pool and
+volume, snapshot, backup schedule) takes `node`, the cluster member it is on, and its data source too. Hyperlite sends
+each request naming another member to it, in the same token's user name, as Proxmox VE does from any node of its
+cluster. `node` left out, `local` and the node's own name are the node the provider talks to. A VM whose `node`
+changes is migrated; any other object is made again on its new node. An object of another member is imported as
+`<node>/` and its usual ID (`pve-b/web-1`).
+
+This needs Hyperlite 1.3 or later on that node. An earlier one ignores `node` on most routes and would act on itself:
+the provider refuses to send such a request.
+
 ## Develop
 
 ```bash
@@ -61,5 +73,5 @@ Mozilla Public License 2.0 ([LICENSE](LICENSE)), as most Terraform providers. Th
 ## Release
 
 A tag `vX.Y.Z` runs `.github/workflows/release.yml`: GoReleaser builds the archives, signs the checksums with the
-organisation's release key (protected `release` environment) and publishes a GitHub release, which
+organisation's release key (protected `Terraform` environment) and publishes a GitHub release, which
 registry.terraform.io and registry.opentofu.org read.

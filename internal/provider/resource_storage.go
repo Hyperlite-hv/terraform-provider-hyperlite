@@ -23,6 +23,7 @@ type storagePoolResource struct{ configured }
 
 type storagePoolModel struct {
 	ID            types.String  `tfsdk:"id"`
+	Node          types.String  `tfsdk:"node"`
 	Name          types.String  `tfsdk:"name"`
 	Type          types.String  `tfsdk:"type"`
 	Path          types.String  `tfsdk:"path"`
@@ -52,6 +53,7 @@ func (r *storagePoolResource) Schema(_ context.Context, _ resource.SchemaRequest
 	resp.Schema = schema.Schema{
 		Description: "A storage pool of the node the provider talks to: a directory, an NFS export, a ZFS pool or an iSCSI target. Its name changes in place; anything else replaces it.",
 		Attributes: map[string]schema.Attribute{
+			"node": nodeAttribute(&r.configured, "storage pool"),
 			"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The pool's name."},
 			"name": schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)}, Description: "Its name. A change renames it."},
 			"type": schema.StringAttribute{
@@ -110,6 +112,10 @@ func (r *storagePoolResource) Create(ctx context.Context, req resource.CreateReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	body := map[string]any{"name": m.Name.ValueString(), "type": m.Type.ValueString()}
 	for k, v := range map[string]types.String{
 		"path": m.Path, "nfs_host": m.NFSHost, "nfs_export_path": m.NFSExportPath, "nfs_version": m.NFSVersion,
@@ -122,7 +128,7 @@ func (r *storagePoolResource) Create(ctx context.Context, req resource.CreateReq
 	if !m.SizeGB.IsNull() {
 		body["size_gb"] = m.SizeGB.ValueInt64()
 	}
-	if err := r.client.API.Call(ctx, "POST", "/storage", body, nil); err != nil {
+	if err := c.call(ctx, "POST", "/storage", body, nil); err != nil {
 		resp.Diagnostics.AddError("Cannot create the storage pool", err.Error())
 		return
 	}
@@ -136,7 +142,7 @@ func (r *storagePoolResource) Create(ctx context.Context, req resource.CreateReq
 
 func (r *storagePoolResource) readInto(ctx context.Context, m *storagePoolModel, diags interface{ AddError(string, string) }) bool {
 	var p storagePoolWire
-	err := notFound(r.client.API.Call(ctx, "GET", "/storage/"+esc(m.ID.ValueString()), nil, &p))
+	err := notFound(r.client.at(memberOf(m.Node)).call(ctx, "GET", "/storage/"+esc(m.ID.ValueString()), nil, &p))
 	if err != nil {
 		if !errors.Is(err, errNotFound) {
 			diags.AddError("Cannot read the storage pool", err.Error())
@@ -165,6 +171,9 @@ func (r *storagePoolResource) Read(ctx context.Context, req resource.ReadRequest
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
 	}
 	if !r.readInto(ctx, &m, &resp.Diagnostics) {
 		if !resp.Diagnostics.HasError() {
@@ -200,8 +209,9 @@ func (r *storagePoolResource) Update(ctx context.Context, req resource.UpdateReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	c := r.client.at(memberOf(state.Node))
 	if plan.Name.ValueString() != state.Name.ValueString() {
-		if err := r.client.API.Call(ctx, "POST", "/storage/"+esc(state.Name.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
+		if err := c.call(ctx, "POST", "/storage/"+esc(state.Name.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the storage pool", err.Error())
 			return
 		}
@@ -214,13 +224,17 @@ func (r *storagePoolResource) Update(ctx context.Context, req resource.UpdateReq
 func (r *storagePoolResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m storagePoolModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/storage/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	c := r.client.at(memberOf(m.Node))
+	if err := c.call(ctx, "DELETE", "/storage/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the storage pool", err.Error())
 	}
 }
 
+// ImportState takes `<storage_pool>`, or `<node>/<storage_pool>`.
 func (r *storagePoolResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if id := importOn(ctx, req, resp, "<storage_pool>"); id != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id[0])...)
+	}
 }
 
 // ---- hyperlite_storage_volume ----
@@ -229,6 +243,7 @@ type volumeResource struct{ configured }
 
 type volumeModel struct {
 	ID          types.String `tfsdk:"id"`
+	Node        types.String `tfsdk:"node"`
 	StoragePool types.String `tfsdk:"storage_pool"`
 	Name        types.String `tfsdk:"name"`
 	SizeGB      types.Int64  `tfsdk:"size_gb"`
@@ -247,6 +262,7 @@ func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 	resp.Schema = schema.Schema{
 		Description: "A blank volume of a storage pool (a qcow2 file, or a zvol on ZFS), to keep data apart from a VM. A disk of `hyperlite_vm` makes its own; use this for a volume that outlives its VMs.",
 		Attributes: map[string]schema.Attribute{
+			"node":         nodeAttribute(&r.configured, "volume's storage pool"),
 			"id":           schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "`<storage_pool>/<volume>`."},
 			"storage_pool": schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "Its storage pool."},
 			"name":         schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.RegexMatches(volumeNameRe, nameRule+", `.qcow2` optional")}, Description: "Its name (`.qcow2` is added on a file pool)."},
@@ -269,9 +285,13 @@ func (r *volumeResource) Create(ctx context.Context, req resource.CreateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	var made volumeWire
 	body := map[string]any{"name": m.Name.ValueString(), "size_gb": m.SizeGB.ValueInt64()}
-	if err := r.client.API.Call(ctx, "POST", "/storage/"+esc(m.StoragePool.ValueString())+"/volumes", body, &made); err != nil {
+	if err := c.call(ctx, "POST", "/storage/"+esc(m.StoragePool.ValueString())+"/volumes", body, &made); err != nil {
 		resp.Diagnostics.AddError("Cannot create the volume", err.Error())
 		return
 	}
@@ -286,9 +306,13 @@ func (r *volumeResource) Read(ctx context.Context, req resource.ReadRequest, res
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
+	c := r.client.at(memberOf(m.Node))
 	pool, vol, _ := strings.Cut(m.ID.ValueString(), "/")
 	var v volumeWire
-	err := notFound(r.client.API.Call(ctx, "GET", "/storage/"+esc(pool)+"/volumes/"+esc(vol), nil, &v))
+	err := notFound(c.call(ctx, "GET", "/storage/"+esc(pool)+"/volumes/"+esc(vol), nil, &v))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -314,19 +338,20 @@ func (r *volumeResource) Update(context.Context, resource.UpdateRequest, *resour
 func (r *volumeResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m volumeModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	c := r.client.at(memberOf(m.Node))
 	pool, vol, _ := strings.Cut(m.ID.ValueString(), "/")
-	if err := r.client.API.Call(ctx, "DELETE", "/storage/"+esc(pool)+"/volumes/"+esc(vol)+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := c.call(ctx, "DELETE", "/storage/"+esc(pool)+"/volumes/"+esc(vol)+"?confirm=true", nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the volume", err.Error())
 	}
 }
 
-// ImportState takes `<storage_pool>/<volume>`.
+// ImportState takes `<storage_pool>/<volume>`, or `<node>/<storage_pool>/<volume>`.
 func (r *volumeResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	pool, vol, ok := strings.Cut(req.ID, "/")
-	if !ok || pool == "" || vol == "" {
-		resp.Diagnostics.AddError("Import id", "Give `<storage_pool>/<volume>`.")
+	id := importOn(ctx, req, resp, "<storage_pool>/<volume>")
+	if id == nil {
 		return
 	}
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	pool, vol := id[0], id[1]
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), pool+"/"+vol)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), strings.TrimSuffix(vol, ".qcow2"))...)
 }

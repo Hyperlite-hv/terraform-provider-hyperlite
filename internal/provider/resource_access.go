@@ -85,7 +85,7 @@ func (r *poolResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 	var made poolWire
-	if err := r.client.API.Call(ctx, "POST", "/pools", map[string]any{"name": m.Name.ValueString(), "description": m.Description.ValueString()}, &made); err != nil {
+	if err := r.client.call(ctx, "POST", "/pools", map[string]any{"name": m.Name.ValueString(), "description": m.Description.ValueString()}, &made); err != nil {
 		resp.Diagnostics.AddError("Cannot create the pool", err.Error())
 		return
 	}
@@ -100,7 +100,7 @@ func (r *poolResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 	var p poolWire
-	err := notFound(r.client.API.Call(ctx, "GET", "/pools/"+m.ID.ValueString(), nil, &p))
+	err := notFound(r.client.call(ctx, "GET", "/pools/"+m.ID.ValueString(), nil, &p))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -124,7 +124,7 @@ func (r *poolResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if plan.Name.ValueString() != state.Name.ValueString() {
 		body["name"] = plan.Name.ValueString()
 	}
-	if err := r.client.API.Call(ctx, "PATCH", "/pools/"+state.ID.ValueString(), body, nil); err != nil {
+	if err := r.client.call(ctx, "PATCH", "/pools/"+state.ID.ValueString(), body, nil); err != nil {
 		resp.Diagnostics.AddError("Cannot change the pool", err.Error())
 		return
 	}
@@ -135,7 +135,7 @@ func (r *poolResource) Update(ctx context.Context, req resource.UpdateRequest, r
 func (r *poolResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m poolModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/pools/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/pools/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the pool", err.Error())
 	}
 }
@@ -216,7 +216,7 @@ func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 	body := map[string]any{"username": m.Username.ValueString(), "password": m.Password.ValueString(), "role": m.Role.ValueString()}
-	if err := r.client.API.Call(ctx, "POST", "/auth/users", body, nil); err != nil {
+	if err := r.client.call(ctx, "POST", "/auth/users", body, nil); err != nil {
 		resp.Diagnostics.AddError("Cannot create the account", err.Error())
 		return
 	}
@@ -234,7 +234,7 @@ func (r *userResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		Username string `json:"username"`
 		Role     string `json:"role"`
 	}
-	err := notFound(r.client.API.Call(ctx, "GET", "/auth/users/"+esc(m.ID.ValueString()), nil, &u))
+	err := notFound(r.client.call(ctx, "GET", "/auth/users/"+esc(m.ID.ValueString()), nil, &u))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -262,7 +262,7 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		body["password"] = plan.Password.ValueString()
 	}
 	if len(body) > 0 {
-		if err := r.client.API.Call(ctx, "PATCH", "/auth/users/"+esc(state.ID.ValueString()), body, nil); err != nil {
+		if err := r.client.call(ctx, "PATCH", "/auth/users/"+esc(state.ID.ValueString()), body, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot change the account", err.Error())
 			return
 		}
@@ -274,7 +274,7 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 func (r *userResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m userModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/auth/users/"+esc(m.ID.ValueString()), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/auth/users/"+esc(m.ID.ValueString()), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the account", err.Error())
 	}
 }
@@ -329,14 +329,14 @@ func (r *groupResource) syncMembers(ctx context.Context, id string, have, want [
 	for _, u := range want {
 		w[u] = true
 		if !h[u] {
-			if err := r.client.API.Call(ctx, "POST", "/groups/"+id+"/members", map[string]any{"username": u}, nil); err != nil {
+			if err := r.client.call(ctx, "POST", "/groups/"+id+"/members", map[string]any{"username": u}, nil); err != nil {
 				return fmt.Errorf("adding %s: %w", u, err)
 			}
 		}
 	}
 	for _, u := range have {
 		if !w[u] {
-			if err := r.client.API.Call(ctx, "DELETE", "/groups/"+id+"/members/"+esc(u), nil, nil); err != nil {
+			if err := r.client.call(ctx, "DELETE", "/groups/"+id+"/members/"+esc(u), nil, nil); err != nil {
 				return fmt.Errorf("removing %s: %w", u, err)
 			}
 		}
@@ -351,7 +351,7 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 	var made groupWire
-	if err := r.client.API.Call(ctx, "POST", "/groups", map[string]any{"name": m.Name.ValueString()}, &made); err != nil {
+	if err := r.client.call(ctx, "POST", "/groups", map[string]any{"name": m.Name.ValueString()}, &made); err != nil {
 		resp.Diagnostics.AddError("Cannot create the group", err.Error())
 		return
 	}
@@ -374,7 +374,7 @@ func (r *groupResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 	var g groupWire
-	err := notFound(r.client.API.Call(ctx, "GET", "/groups/"+m.ID.ValueString(), nil, &g))
+	err := notFound(r.client.call(ctx, "GET", "/groups/"+m.ID.ValueString(), nil, &g))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -396,7 +396,7 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	id := state.ID.ValueString()
 	if plan.Name.ValueString() != state.Name.ValueString() {
-		if err := r.client.API.Call(ctx, "PATCH", "/groups/"+id, map[string]any{"name": plan.Name.ValueString()}, nil); err != nil {
+		if err := r.client.call(ctx, "PATCH", "/groups/"+id, map[string]any{"name": plan.Name.ValueString()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the group", err.Error())
 			return
 		}
@@ -416,7 +416,7 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 func (r *groupResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m groupModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/groups/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/groups/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the group", err.Error())
 	}
 }
@@ -465,7 +465,7 @@ func (r *roleResource) Create(ctx context.Context, req resource.CreateRequest, r
 		Key string `json:"key"`
 	}
 	body := map[string]any{"name": m.Name.ValueString(), "privileges": stringsOf(ctx, m.Privileges)}
-	if err := r.client.API.Call(ctx, "POST", "/acl/custom-roles", body, &made); err != nil {
+	if err := r.client.call(ctx, "POST", "/acl/custom-roles", body, &made); err != nil {
 		resp.Diagnostics.AddError("Cannot create the role", err.Error())
 		return
 	}
@@ -484,7 +484,7 @@ func (r *roleResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		Label      string   `json:"label"`
 		Privileges []string `json:"privileges"`
 	}
-	err := notFound(r.client.API.Call(ctx, "GET", "/acl/custom-roles/"+m.ID.ValueString(), nil, &role))
+	err := notFound(r.client.call(ctx, "GET", "/acl/custom-roles/"+m.ID.ValueString(), nil, &role))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -508,7 +508,7 @@ func (r *roleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if plan.Name.ValueString() != state.Name.ValueString() {
 		body["name"] = plan.Name.ValueString()
 	}
-	if err := r.client.API.Call(ctx, "PATCH", "/acl/custom-roles/"+state.ID.ValueString(), body, nil); err != nil {
+	if err := r.client.call(ctx, "PATCH", "/acl/custom-roles/"+state.ID.ValueString(), body, nil); err != nil {
 		resp.Diagnostics.AddError("Cannot change the role", err.Error())
 		return
 	}
@@ -519,7 +519,7 @@ func (r *roleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 func (r *roleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m roleModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/acl/custom-roles/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/acl/custom-roles/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the role", err.Error())
 	}
 }
@@ -581,7 +581,7 @@ func (r *aclResource) Create(ctx context.Context, req resource.CreateRequest, re
 	var made struct {
 		ID int64 `json:"id"`
 	}
-	if err := r.client.API.Call(ctx, "POST", "/acl", body, &made); err != nil {
+	if err := r.client.call(ctx, "POST", "/acl", body, &made); err != nil {
 		resp.Diagnostics.AddError("Cannot give the role", err.Error())
 		return
 	}
@@ -602,7 +602,7 @@ func (r *aclResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		ResourceType string `json:"resource_type"`
 		ResourceID   string `json:"resource_id"`
 	}
-	err := notFound(r.client.API.Call(ctx, "GET", "/acl/"+m.ID.ValueString(), nil, &a))
+	err := notFound(r.client.call(ctx, "GET", "/acl/"+m.ID.ValueString(), nil, &a))
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -623,7 +623,7 @@ func (r *aclResource) Update(context.Context, resource.UpdateRequest, *resource.
 func (r *aclResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m aclModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	if err := r.client.API.Call(ctx, "DELETE", "/acl/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
+	if err := r.client.call(ctx, "DELETE", "/acl/"+m.ID.ValueString(), nil, nil); err != nil && !errors.Is(notFound(err), errNotFound) {
 		resp.Diagnostics.AddError("Cannot remove the assignment", err.Error())
 	}
 }
