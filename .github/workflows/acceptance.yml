@@ -67,6 +67,14 @@ jobs:
           XML
           sudo virsh net-define /tmp/isolated.xml
           sudo virsh net-start hyperlite-isolated
+      - name: An NFS export, for a shared storage pool (HA)
+        run: |
+          sudo apt-get install -y --no-install-recommends nfs-kernel-server
+          sudo mkdir -p /srv/tfacc-nfs
+          echo '/srv/tfacc-nfs 127.0.0.1(rw,sync,no_root_squash,no_subtree_check)' | sudo tee /etc/exports
+          sudo exportfs -ra
+          sudo systemctl restart nfs-kernel-server
+          showmount -e 127.0.0.1
       - name: Start Hyperlite
         working-directory: hyperlite
         run: |

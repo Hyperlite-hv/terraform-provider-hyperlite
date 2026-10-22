@@ -577,3 +577,54 @@ data "hyperlite_iso" "i" {
 		},
 	})
 }
+
+const accHA = accProvider + `
+resource "hyperlite_storage_pool" "nfs" {
+  name            = "tfacc-nfs"
+  type            = "netfs"
+  nfs_host        = "127.0.0.1"
+  nfs_export_path = "/srv/tfacc-nfs"
+}
+
+resource "hyperlite_vm" "ha" {
+  name         = "tfacc-ha"
+  vcpu         = 1
+  memory_mb    = 512
+  storage_pool = hyperlite_storage_pool.nfs.name
+  wait_for_ip  = "0s"
+
+  cloud_init {
+    user     = "tfacc"
+    password = "Tfacc-pass-2026"
+  }
+
+  disk { size_gb = 3 }
+  network_interface { network = "hyperlite-isolated" }
+}
+
+resource "hyperlite_vm_ha" "ha" {
+  vm = hyperlite_vm.ha.name
+}
+`
+
+// TestAccHA: a VM whose disk is on an NFS pool (the runner exports one, .github/workflows/acceptance.yml) is
+// protected, imported and unprotected, on a real Hyperlite: the refusal on local storage is TestAccBackup's.
+func TestAccHA(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		CheckDestroy:             accGone("tfacc-ha"),
+		Steps: []resource.TestStep{
+			{
+				Config: accHA,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_storage_pool.nfs", "state", "active"),
+					resource.TestCheckResourceAttr("hyperlite_vm_ha.ha", "id", "tfacc-ha"),
+					resource.TestCheckResourceAttr("hyperlite_vm_ha.ha", "node", "local"),
+				),
+			},
+			{Config: accHA, PlanOnly: true},
+			{ResourceName: "hyperlite_vm_ha.ha", ImportState: true, ImportStateVerify: true},
+		},
+	})
+}
