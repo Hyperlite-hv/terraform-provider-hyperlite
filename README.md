@@ -6,8 +6,8 @@ manager (KVM and LXC). It drives Hyperlite's API v1 with a personal API token.
 Its design, accepted by the maintainers, is Hyperlite's
 [`docs/design/terraform-provider.md`](https://github.com/Hyperlite-hv/Hyperlite/blob/test/docs/design/terraform-provider.md).
 
-**Status: under development, not published to the registries yet.** It needs Hyperlite 1.2 or later (`?wait=false`
-on long operations).
+It needs **Hyperlite 1.2.0 or later**, the release that brought what it relies on (`?wait=false` on long operations,
+each object read alone, VMs created without the administrator role, cloud image customisation).
 
 | Area | Resources | Data sources |
 |---|---|---|
