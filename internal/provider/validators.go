@@ -14,8 +14,13 @@ import (
 // different, which Terraform reports as an error of the provider after the apply: such values are refused at plan,
 // with the form to write.
 
-// labelRe is cloudinit_edit.LABEL_RE, lowercase only.
-var labelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var (
+	// labelRe is cloudinit_edit.LABEL_RE, lowercase only.
+	labelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// network_edit.MAC_RE (on the lowercased address) and HOSTNAME_RE.
+	macRe             = regexp.MustCompile(`^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$`)
+	reservationNameRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+)
 
 type normalForm struct {
 	what  string
@@ -85,6 +90,15 @@ func ipWithPrefix() validator.String {
 		}
 		if p.String() != s {
 			return "Write it as `" + p.String() + "`, the form Hyperlite stores."
+		}
+		return ""
+	}}
+}
+
+func ipv4Address() validator.String {
+	return normalForm{"IPv4 address", func(s string) string {
+		if a, err := netip.ParseAddr(s); err != nil || !a.Is4() {
+			return "An IPv4 address is expected: `10.0.20.50`."
 		}
 		return ""
 	}}
