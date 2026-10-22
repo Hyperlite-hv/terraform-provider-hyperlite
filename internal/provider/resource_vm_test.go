@@ -205,13 +205,13 @@ func TestVMConfigurationsThatCannotWorkAreRefusedAtPlan(t *testing.T) {
 	_, srv := newFakeHyperlite(t)
 	cases := map[string]string{
 		`An account is needed`: `
-  name = "x"
+  name = "vm-x"
   vcpu = 1
   memory_mb = 512
   disk { size_gb = 3 }
   network_interface { network = "default" }`,
 		`No cloud-init on an ISO installation`: `
-  name = "x"
+  name = "vm-x"
   vcpu = 1
   memory_mb = 512
   iso = "debian.iso"
@@ -219,7 +219,7 @@ func TestVMConfigurationsThatCannotWorkAreRefusedAtPlan(t *testing.T) {
   disk { size_gb = 3 }
   network_interface { network = "default" }`,
 		`No such interface`: `
-  name = "x"
+  name = "vm-x"
   vcpu = 1
   memory_mb = 512
   cloud_init {
@@ -235,7 +235,7 @@ func TestVMConfigurationsThatCannotWorkAreRefusedAtPlan(t *testing.T) {
   disk { size_gb = 3 }
   network_interface { network = "default" }`,
 		`Not a duration`: `
-  name = "x"
+  name = "vm-x"
   vcpu = 1
   memory_mb = 512
   shutdown_timeout = "soon"

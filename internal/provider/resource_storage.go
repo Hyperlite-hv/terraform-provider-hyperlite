@@ -53,7 +53,7 @@ func (r *storagePoolResource) Schema(_ context.Context, _ resource.SchemaRequest
 		Description: "A storage pool of the node the provider talks to: a directory, an NFS export, a ZFS pool or an iSCSI target. Its name changes in place; anything else replaces it.",
 		Attributes: map[string]schema.Attribute{
 			"id":   schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "The pool's name."},
-			"name": schema.StringAttribute{Required: true, Description: "Its name. A change renames it."},
+			"name": schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)}, Description: "Its name. A change renames it."},
 			"type": schema.StringAttribute{
 				Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.OneOf("dir", "netfs", "zfs", "iscsi")},
 				Description: "`dir` (a directory of the node), `netfs` (an NFS export, shared storage), `zfs` or `iscsi`.",
@@ -231,7 +231,7 @@ func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 		Attributes: map[string]schema.Attribute{
 			"id":           schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "`<storage_pool>/<volume>`."},
 			"storage_pool": schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "Its storage pool."},
-			"name":         schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "Its name (`.qcow2` is added on a file pool)."},
+			"name":         schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []validator.String{stringvalidator.RegexMatches(volumeNameRe, nameRule+", `.qcow2` optional")}, Description: "Its name (`.qcow2` is added on a file pool)."},
 			"size_gb":      schema.Int64Attribute{Required: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}, Description: "Its size in GB (a change replaces it: grow a VM's disk through `hyperlite_vm`)."},
 			"volume":       schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "Its name in the pool, as `hyperlite_vm`'s attach takes it."},
 			"path":         schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "Its path on the node."},

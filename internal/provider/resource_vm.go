@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -106,7 +107,13 @@ type ifaceModel struct {
 	MAC     types.String `tfsdk:"mac"`
 }
 
-var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+// The server's rule for every resource name (app/core/vm_builder.py NAME_RE).
+var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{1,62}$`)
+
+// A volume's name may end with the extension the server adds.
+var volumeNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{1,62}(\.qcow2)?$`)
+
+const nameRule = "2 to 63 letters, digits or dashes, starting with a letter or a digit"
 
 func (r *vmResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_vm"
@@ -134,7 +141,7 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 			},
 			"name": schema.StringAttribute{
 				Required:    true,
-				Validators:  []validator.String{stringvalidator.RegexMatches(nameRe, "letters, digits, '_', '-' and '.', up to 63 characters")},
+				Validators:  []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)},
 				Description: "The VM's name. A change renames it (the VM is stopped for it, then started again).",
 			},
 			"node": schema.StringAttribute{
@@ -179,6 +186,8 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 			},
 			"tags": schema.SetAttribute{
 				ElementType: types.StringType, Optional: true, Computed: true,
+				// The server lowercases a tag: one it would change is refused here, not reported as a drift.
+				Validators:  []validator.Set{setvalidator.ValueStringsAre(stringvalidator.RegexMatches(tagRe, tagRule)), setvalidator.SizeAtMost(16)},
 				Description: "Tags, as the dashboard shows them (and backup jobs select VMs by).",
 			},
 			"notes": schema.StringAttribute{

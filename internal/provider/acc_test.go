@@ -317,3 +317,80 @@ func TestAccStorage(t *testing.T) {
 		},
 	})
 }
+
+func accBackup(retention, extra string) string {
+	return accProvider + `
+resource "hyperlite_vm" "small" {
+  name        = "tfacc-bk"
+  vcpu        = 1
+  memory_mb   = 512
+  tags        = ["tfacc-bk"]
+  wait_for_ip = "0s"
+
+  cloud_init {
+    user     = "tfacc"
+    password = "Tfacc-pass-2026"
+  }
+
+  disk { size_gb = 3 }
+  network_interface { network = "hyperlite-isolated" }
+}
+
+resource "hyperlite_vm_backup_schedule" "small" {
+  vm              = hyperlite_vm.small.name
+  frequency       = "daily"
+  time            = "03:15"
+  retention_count = ` + retention + `
+  keep_weeks      = 4
+}
+
+resource "hyperlite_backup_job" "tagged" {
+  name      = "tfacc-job"
+  selection = "tag"
+  value     = "tfacc-bk"
+  frequency = "weekly"
+  time      = "23:45"
+}
+
+resource "hyperlite_vm_snapshot" "before" {
+  vm          = hyperlite_vm.small.name
+  name        = "tfacc-before"
+  description = "taken by the acceptance tests"
+}
+` + extra
+}
+
+// TestAccBackup: a VM's schedule, a grouped job and a snapshot, changed, imported and destroyed; the HA protection
+// of a VM whose disk is not on shared storage is refused with the server's reason.
+func TestAccBackup(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { accPreCheck(t) },
+		ProtoV6ProviderFactories: factories,
+		CheckDestroy:             accGone("tfacc-bk"),
+		Steps: []resource.TestStep{
+			{
+				Config: accBackup("7", ""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.small", "id", "tfacc-bk"),
+					resource.TestCheckNoResourceAttr("hyperlite_vm_backup_schedule.small", "keep_days"),
+					resource.TestCheckResourceAttr("hyperlite_backup_job.tagged", "active", "true"),
+					resource.TestCheckResourceAttr("hyperlite_backup_job.tagged", "excluded.#", "0"),
+					resource.TestCheckResourceAttr("hyperlite_vm_snapshot.before", "id", "tfacc-bk/tfacc-before"),
+					resource.TestCheckResourceAttrSet("hyperlite_vm_snapshot.before", "created_at"),
+				),
+			},
+			{Config: accBackup("7", ""), PlanOnly: true},
+			{
+				Config: accBackup("3", ""),
+				Check:  resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.small", "retention_count", "3"),
+			},
+			{ResourceName: "hyperlite_vm_backup_schedule.small", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_backup_job.tagged", ImportState: true, ImportStateVerify: true},
+			{ResourceName: "hyperlite_vm_snapshot.before", ImportState: true, ImportStateVerify: true},
+			{
+				Config:      accBackup("3", `resource "hyperlite_vm_ha" "small" { vm = hyperlite_vm.small.name }`),
+				ExpectError: regexp.MustCompile(`not on a shared storage pool`),
+			},
+		},
+	})
+}
