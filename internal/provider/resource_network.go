@@ -59,7 +59,7 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		Description: "A virtual network of the node: NAT or isolated with Hyperlite's DHCP, or a bridge onto a host bridge.",
 		Attributes: map[string]schema.Attribute{
 			"id":   schema.StringAttribute{Computed: true, PlanModifiers: keep, Description: "The network's name."},
-			"name": schema.StringAttribute{Required: true, Description: "Its name. A change renames it."},
+			"name": schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.RegexMatches(nameRe, nameRule)}, Description: "Its name. A change renames it."},
 			"mode": schema.StringAttribute{
 				Required: true, Validators: []validator.String{stringvalidator.OneOf("nat", "isolated", "bridge")},
 				Description: "`nat` (routed to the host's network), `isolated` (no way out) or `bridge` (onto a host bridge). Between `nat` and `isolated` it changes in place; to or from `bridge`, the network is replaced.",

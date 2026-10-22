@@ -167,6 +167,10 @@ func (p *hyperliteProvider) Resources(_ context.Context) []func() resource.Resou
 		newACLResource,
 		newStoragePoolResource,
 		newVolumeResource,
+		newScheduleResource,
+		newBackupJobResource,
+		newSnapshotResource,
+		newHAResource,
 	}
 }
 
