@@ -1,0 +1,6 @@
+dist/
+terraform-provider-hyperlite
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
