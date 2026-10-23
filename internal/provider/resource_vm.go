@@ -269,8 +269,10 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 				}},
 			},
 			"network_interface": schema.ListNestedBlock{
-				Description: "The VM's interfaces, in order. A change of network keeps the interface's MAC address.",
-				Validators:  []validator.List{listvalidator.SizeAtLeast(1)},
+				Description: "The VM's interfaces, in order: at least one. A change of network keeps the interface's MAC address.",
+				// IsRequired too: a block left out is a null list, which SizeAtLeast lets through (the VM was then
+				// made from its first interface, and the provider crashed).
+				Validators: []validator.List{listvalidator.IsRequired(), listvalidator.SizeAtLeast(1)},
 				NestedObject: schema.NestedBlockObject{Attributes: map[string]schema.Attribute{
 					"network":  schema.StringAttribute{Required: true, Description: "The network's name (data source `hyperlite_network`)."},
 					"vlan_tag": schema.Int64Attribute{Optional: true, Validators: []validator.Int64{int64validator.Between(1, 4094)}, Description: "802.1Q tag, on a network that carries tags."},
