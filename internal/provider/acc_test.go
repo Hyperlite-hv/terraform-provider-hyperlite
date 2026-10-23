@@ -554,7 +554,7 @@ data "hyperlite_iso" "i" {
 		ProtoV6ProviderFactories: factories,
 		CheckDestroy: func(*terraform.State) error {
 			for _, n := range []string{"tfacc-1.0.iso", "tfacc-1.1.iso"} {
-				if _, err := (&isoResource{configured{client: accClient()}}).iso(context.Background(), n); !errors.Is(err, errNotFound) {
+				if _, err := (&isoResource{}).iso(context.Background(), accClient(), n); !errors.Is(err, errNotFound) {
 					return fmt.Errorf("the ISO %s is still there after the destroy (%v)", n, err)
 				}
 			}
