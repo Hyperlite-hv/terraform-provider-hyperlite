@@ -3,12 +3,12 @@
 page_title: "hyperlite_iso Resource - Hyperlite"
 subcategory: ""
 description: |-
-  An ISO image uploaded from this machine to the node's library, to install VMs from it (hyperlite_vm.iso).
+  An ISO image uploaded from this machine to a node's library, to install VMs from it (hyperlite_vm.iso). Through the node the provider talks to, which sends it on to the member node names (Hyperlite 1.3 or later).
 ---
 
 # hyperlite_iso (Resource)
 
-An ISO image uploaded from this machine to the node's library, to install VMs from it (`hyperlite_vm.iso`).
+An ISO image uploaded from this machine to a node's library, to install VMs from it (`hyperlite_vm.iso`). Through the node the provider talks to, which sends it on to the member `node` names (Hyperlite 1.3 or later).
 
 ## Example Usage
 
@@ -30,6 +30,7 @@ resource "hyperlite_iso" "debian" {
 
 ### Optional
 
+- `node` (String) The member of the cluster the image is on (absent: the node the provider talks to). Another member makes it again there.
 - `source_hash` (String) Set it to `filesha256(source)` to upload the image again when the file changes at the same path.
 
 ### Read-Only
@@ -45,5 +46,8 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By the file's name; the same led by `<node>/` for one on another node of the cluster. `source` is not read back:
+# give the configuration the file it was uploaded from.
 terraform import hyperlite_iso.debian debian-13.1.0-amd64-netinst.iso
+terraform import hyperlite_iso.debian pve-b/debian-13.1.0-amd64-netinst.iso
 ```

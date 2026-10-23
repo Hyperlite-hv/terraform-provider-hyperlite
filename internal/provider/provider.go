@@ -4,7 +4,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -168,11 +171,56 @@ func (c *Client) at(node string) *Client {
 
 // call is every API call of the provider: the route, on this client's member.
 func (c *Client) call(ctx context.Context, method, path string, body, out any) error {
+	if err := c.reaches(method, path); err != nil {
+		return err
+	}
+	return c.API.Call(ctx, method, withNode(path, c.node), body, out)
+}
+
+// post sends a body that is not JSON (a file, streamed: never held in memory) to the route, on this client's member.
+// No time limit but the context's.
+func (c *Client) post(ctx context.Context, path, contentType string, body io.Reader) error {
+	if err := c.reaches("POST", path); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.API.URL+hyperlite.APIPrefix+withNode(path, c.node), body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.API.Token)
+	if c.API.UserAgent != "" {
+		req.Header.Set("User-Agent", c.API.UserAgent)
+	}
+	hc := c.API.HTTPClient()
+	hc.Timeout = 0
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("cannot send to %s: %w", c.API.URL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var payload struct {
+			Detail any `json:"detail"`
+		}
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = json.Unmarshal(data, &payload)
+		if d, ok := payload.Detail.(string); ok {
+			return &hyperlite.APIError{Status: resp.StatusCode, Detail: d}
+		}
+		return &hyperlite.APIError{Status: resp.StatusCode}
+	}
+	return nil
+}
+
+// reaches refuses a call naming another member that the server would make on itself.
+func (c *Client) reaches(method, path string) error {
 	if c.node != "" && c.self == "" && !tookNode(method, path) {
 		return fmt.Errorf("this Hyperlite (%s) would do this on its own node, not on %s: `node` needs Hyperlite 1.3 or later "+
 			"for this object; leave it out or point the provider at %s", c.Version, c.node, c.node)
 	}
-	return c.API.Call(ctx, method, withNode(path, c.node), body, out)
+	return nil
 }
 
 // before13 is what a Hyperlite before 1.3, which does not say its node's name, already did on the node `?node=`
