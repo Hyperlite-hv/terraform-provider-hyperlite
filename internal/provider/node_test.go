@@ -140,7 +140,7 @@ func TestEveryCallGoesThroughTheMembersClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bare := regexp.MustCompile(`\.API\.(Call|WaitTask|Get\w*)\(`)
+	bare := regexp.MustCompile(`\.API\.(Call|WaitTask|Get\w*|HTTPClient)\(|\.API\.URL\b`)
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") || name == "provider.go" {
 			continue
@@ -151,8 +151,47 @@ func TestEveryCallGoesThroughTheMembersClient(t *testing.T) {
 		}
 		for i, line := range strings.Split(string(src), "\n") {
 			if bare.MatchString(line) {
-				t.Errorf("%s:%d calls the API directly; use Client.call or Client.waitTask", name, i+1)
+				t.Errorf("%s:%d calls the API directly; use Client.call, Client.post or Client.waitTask", name, i+1)
 			}
 		}
 	}
+}
+
+// An image is uploaded to the member `node` names, through the node the provider talks to, and renamed there.
+func TestAnImageIsUploadedToItsMember(t *testing.T) {
+	members, srv := newFakeCluster(t, "pve-b")
+	here, there := members["hv-a"], members["pve-b"]
+	source := filepath.Join(t.TempDir(), "debian.iso")
+	if err := os.WriteFile(source, []byte("ISO image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := func(name string) string {
+		return providerBlock(srv.URL, "hlt_ok") + fmt.Sprintf(`
+resource "hyperlite_iso" "debian" {
+  name   = %q
+  node   = "pve-b"
+  source = %q
+}
+`, name, source)
+	}
+	only := func(name string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			if string(there.isos[name]) != "ISO image" || len(there.isos) != 1 || len(here.isos) != 0 {
+				return fmt.Errorf("%s is not on pve-b alone: pve-b has %d, hv-a %d", name, len(there.isos), len(here.isos))
+			}
+			return nil
+		}
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			{Config: config("debian.iso"), Check: resource.ComposeAggregateTestCheckFunc(only("debian.iso"),
+				resource.TestCheckResourceAttr("hyperlite_iso.debian", "node", "pve-b"))},
+			{
+				ResourceName: "hyperlite_iso.debian", ImportState: true, ImportStateId: "pve-b/debian.iso",
+				ImportStateVerify: true, ImportStateVerifyIgnore: []string{"source"},
+			},
+			{Config: config("debian-13.iso"), Check: only("debian-13.iso")},
+		},
+	})
 }
