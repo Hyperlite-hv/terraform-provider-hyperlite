@@ -2,12 +2,9 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"os"
 	"regexp"
 
@@ -20,16 +17,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	"github.com/Hyperlite-hv/Hyperlite/cli/hyperlite"
 )
 
 // isoNameRe is the server's ISO_NAME_RE (app/routers/isos.py) with the .iso extension it requires: distribution
 // images are named with dots and underscores, not with the VM name rule.
 var isoNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}\.iso$`)
 
-// uploadISO sends a local file to the node's ISO library (POST /isos, multipart), streamed: an image of several GB
-// is never held in memory, and the request has no time limit but the context's.
+// uploadISO sends a local file to the ISO library of this client's member (POST /isos, multipart), streamed: an image
+// of several GB is never held in memory, and the request has no time limit but the context's.
 func (c *Client) uploadISO(ctx context.Context, name, source string) error {
 	f, err := os.Open(source)
 	if err != nil {
@@ -48,35 +43,9 @@ func (c *Client) uploadISO(ctx context.Context, name, source string) error {
 		}
 		w.CloseWithError(err)
 	}()
-	req, err := http.NewRequestWithContext(ctx, "POST", c.API.URL+hyperlite.APIPrefix+"/isos", body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", form.FormDataContentType())
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.API.Token)
-	if c.API.UserAgent != "" {
-		req.Header.Set("User-Agent", c.API.UserAgent)
-	}
-	hc := c.API.HTTPClient()
-	hc.Timeout = 0 // the context bounds it (the resource's create timeout)
-	resp, err := hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("cannot upload to %s: %w", c.API.URL, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		var payload struct {
-			Detail any `json:"detail"`
-		}
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_ = json.Unmarshal(data, &payload)
-		if d, ok := payload.Detail.(string); ok {
-			return &hyperlite.APIError{Status: resp.StatusCode, Detail: d}
-		}
-		return &hyperlite.APIError{Status: resp.StatusCode}
-	}
-	return nil
+	err = c.post(ctx, "/isos", form.FormDataContentType(), body)
+	body.CloseWithError(err) // the writer stops when the request ends early
+	return err
 }
 
 // ---- hyperlite_iso ----
@@ -85,6 +54,7 @@ type isoResource struct{ configured }
 
 type isoResourceModel struct {
 	ID         types.String  `tfsdk:"id"`
+	Node       types.String  `tfsdk:"node"`
 	Name       types.String  `tfsdk:"name"`
 	Source     types.String  `tfsdk:"source"`
 	SourceHash types.String  `tfsdk:"source_hash"`
@@ -111,9 +81,10 @@ var replacedOnceKnown = stringplanmodifier.RequiresReplaceIf(
 func (r *isoResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	keepString := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
 	resp.Schema = schema.Schema{
-		Description: "An ISO image uploaded from this machine to the node's library, to install VMs from it (`hyperlite_vm.iso`).",
+		Description: "An ISO image uploaded from this machine to a node's library, to install VMs from it (`hyperlite_vm.iso`). Through the node the provider talks to, which sends it on to the member `node` names (Hyperlite 1.3 or later).",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The file's name in the library."},
+			"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{idFollowsName{}}, Description: "The file's name in the library."},
+			"node": nodeAttribute(&r.configured, "image"),
 			"name": schema.StringAttribute{
 				Required: true,
 				Validators: []validator.String{stringvalidator.RegexMatches(isoNameRe,
@@ -140,8 +111,8 @@ type isoWire struct {
 	AddedAt string  `json:"added_at"`
 }
 
-func (r *isoResource) iso(ctx context.Context, name string) (*isoWire, error) {
-	isos, err := list[isoWire](ctx, r.client, "/isos")
+func (r *isoResource) iso(ctx context.Context, c *Client, name string) (*isoWire, error) {
+	isos, err := list[isoWire](ctx, c, "/isos")
 	if err != nil {
 		return nil, err
 	}
@@ -163,12 +134,16 @@ func (r *isoResource) Create(ctx context.Context, req resource.CreateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if m.Node.IsUnknown() {
+		m.Node = types.StringValue("local")
+	}
+	c := r.client.at(memberOf(m.Node))
 	// The file is read at the upload only: once the image is in the library, a plan does not need it.
-	if err := r.client.uploadISO(ctx, m.Name.ValueString(), m.Source.ValueString()); err != nil {
+	if err := c.uploadISO(ctx, m.Name.ValueString(), m.Source.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Cannot upload the ISO image", err.Error())
 		return
 	}
-	i, err := r.iso(ctx, m.Name.ValueString())
+	i, err := r.iso(ctx, c, m.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the uploaded ISO image", err.Error())
 		return
@@ -183,7 +158,10 @@ func (r *isoResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	i, err := r.iso(ctx, m.ID.ValueString())
+	if m.Node.IsNull() {
+		m.Node = types.StringValue("local") // imported
+	}
+	i, err := r.iso(ctx, r.client.at(memberOf(m.Node)), m.ID.ValueString())
 	if errors.Is(err, errNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
@@ -203,14 +181,15 @@ func (r *isoResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	c := r.client.at(memberOf(state.Node))
 	// In place: a rename, or a source named after an import (nothing to upload).
 	if !plan.Name.Equal(state.Name) {
-		if err := r.client.call(ctx, "POST", "/isos/"+esc(state.ID.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
+		if err := c.call(ctx, "POST", "/isos/"+esc(state.ID.ValueString())+"/rename", map[string]any{"new_name": plan.Name.ValueString()}, nil); err != nil {
 			resp.Diagnostics.AddError("Cannot rename the ISO image", err.Error())
 			return
 		}
 	}
-	i, err := r.iso(ctx, plan.Name.ValueString())
+	i, err := r.iso(ctx, c, plan.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot read the ISO image", err.Error())
 		return
@@ -222,12 +201,18 @@ func (r *isoResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *isoResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m isoResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
-	err := notFound(r.client.call(ctx, "DELETE", "/isos/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	err := notFound(r.client.at(memberOf(m.Node)).call(ctx, "DELETE", "/isos/"+esc(m.ID.ValueString())+"?confirm=true", nil, nil))
 	if err != nil && !errors.Is(err, errNotFound) {
 		resp.Diagnostics.AddError("Cannot delete the ISO image", err.Error())
 	}
 }
 
+// ImportState takes `<file>`, or `<node>/<file>`.
 func (r *isoResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if id := importOn(ctx, req, resp, "<file>"); id != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id[0])...)
+	}
 }
