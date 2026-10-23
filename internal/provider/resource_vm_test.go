@@ -235,6 +235,13 @@ func TestVMConfigurationsThatCannotWorkAreRefusedAtPlan(t *testing.T) {
   }
   disk { size_gb = 3 }
   network_interface { network = "default" }`,
+		// Left out, the list is null and SizeAtLeast lets it through: the VM was made from its first interface.
+		`(?s)network_interface.*required|required.*network_interface`: `
+  name = "vm-x"
+  vcpu = 1
+  memory_mb = 512
+  iso = "debian.iso"
+  disk { size_gb = 3 }`,
 		`Not a duration`: `
   name = "vm-x"
   vcpu = 1
