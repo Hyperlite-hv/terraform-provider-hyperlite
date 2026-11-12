@@ -63,8 +63,8 @@ func (r *templateResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"keep_vm": schema.BoolAttribute{
 				Optional: true, Computed: true, Default: booldefault.StaticBool(true),
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
-				Description: "`true`: the template gets a copy of the VM's disk and the VM stays (vSphere's *Clone to Template*). " +
-					"`false`: the VM becomes the template and is gone (Proxmox VE's *Convert to template*): do not manage that VM with `hyperlite_vm` too.",
+				Description: "`true`: the template gets a copy of the VM's disk and the VM stays. " +
+					"`false`: the VM becomes the template and is gone: do not manage that VM with `hyperlite_vm` too.",
 			},
 			"shutdown_timeout": schema.StringAttribute{
 				Optional: true, Computed: true, Default: stringdefault.StaticString("3m"),

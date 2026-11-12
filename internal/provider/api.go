@@ -272,7 +272,7 @@ func (c *Client) startVM(ctx context.Context, name string) error {
 }
 
 // stopVM shuts the guest down cleanly and waits until it is stopped, at most `grace`; then, when `force`, stops it
-// hard (the rule of vSphere's shutdown_wait_timeout and force_power_off).
+// hard.
 func (c *Client) stopVM(ctx context.Context, name string, grace time.Duration, force bool) error {
 	vm, err := c.vmByName(ctx, name, "")
 	if err != nil {
@@ -297,7 +297,7 @@ func (c *Client) stopVM(ctx context.Context, name string, grace time.Duration, f
 }
 
 // whileStopped runs fn with the VM stopped, then starts it again if it was running, under the name fn leaves it with
-// (a rename): the rule of vSphere's shutdown_wait_timeout and force_power_off. When fn fails, the VM is started
+// (a rename). When fn fails, the VM is started
 // again as it was; the error that matters is fn's.
 func (c *Client) whileStopped(ctx context.Context, name string, grace time.Duration, force bool, fn func() (string, error)) error {
 	vm, err := c.vmByName(ctx, name, "")

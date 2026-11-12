@@ -3,12 +3,12 @@
 page_title: "hyperlite_vm_ha Resource - Hyperlite"
 subcategory: ""
 description: |-
-  The HA protection of a VM, as vSphere's vsphere_ha_vm_override: Hyperlite keeps its definition to start it on another node when its own fails. Its disks must be on shared storage.
+  The HA protection of a VM: Hyperlite keeps its definition to start it on another node when its own fails. Its disks must be on shared storage.
 ---
 
 # hyperlite_vm_ha (Resource)
 
-The HA protection of a VM, as vSphere's `vsphere_ha_vm_override`: Hyperlite keeps its definition to start it on another node when its own fails. Its disks must be on shared storage.
+The HA protection of a VM: Hyperlite keeps its definition to start it on another node when its own fails. Its disks must be on shared storage.
 
 ## Example Usage
 

@@ -44,10 +44,9 @@ with `fingerprint`, its SHA-256 as `hyperlite login` shows it.
 
 The provider talks to one node; every object a node holds (VM, template, network and reservation, storage pool and
 volume, snapshot, backup schedule, ISO image) takes `node`, the cluster member it is on, and its data source too. Hyperlite sends
-each request naming another member to it, in the same token's user name, as Proxmox VE does from any node of its
-cluster. `node` left out, `local` and the node's own name are the node the provider talks to. A VM whose `node`
+each request naming another member to it, in the same token's user name. `node` left out, `local` and the node's own name are the node the provider talks to. A VM whose `node`
 changes is migrated; any other object is made again on its new node. An object of another member is imported as
-`<node>/` and its usual ID (`pve-b/web-1`).
+`<node>/` and its usual ID (`node-b/web-1`).
 
 This needs Hyperlite 1.3 or later on that node. An earlier one ignores `node` on most routes and would act on itself:
 the provider refuses to send such a request.

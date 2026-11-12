@@ -2,7 +2,7 @@ data "hyperlite_template" "debian" {
   name = "debian-12-base"
 }
 
-# A VM deployed from a template, customised at its first boot, as vSphere's clone { customize }.
+# A VM deployed from a template, customised at its first boot.
 resource "hyperlite_vm" "web" {
   name      = "web-1"
   vcpu      = 2

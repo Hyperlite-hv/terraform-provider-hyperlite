@@ -13,7 +13,7 @@ A template made from a stopped VM, to deploy VMs from it (`hyperlite_vm.clone.te
 ## Example Usage
 
 ```terraform
-# A template copied from a VM (the VM stays, as vSphere's Clone to Template). A running VM is shut down for the copy
+# A template copied from a VM (the VM stays). A running VM is shut down for the copy
 # and started again.
 resource "hyperlite_template" "golden" {
   name = "debian-golden"
@@ -32,7 +32,7 @@ resource "hyperlite_template" "golden" {
 ### Optional
 
 - `force_stop` (Boolean) Stop the VM hard when its clean shutdown did not end within `shutdown_timeout`.
-- `keep_vm` (Boolean) `true`: the template gets a copy of the VM's disk and the VM stays (vSphere's *Clone to Template*). `false`: the VM becomes the template and is gone (Proxmox VE's *Convert to template*): do not manage that VM with `hyperlite_vm` too.
+- `keep_vm` (Boolean) `true`: the template gets a copy of the VM's disk and the VM stays. `false`: the VM becomes the template and is gone: do not manage that VM with `hyperlite_vm` too.
 - `node` (String) The member of the cluster the template is on (absent: the node the provider talks to). Another member makes it again there.
 - `shutdown_timeout` (String) How long the VM's clean shutdown may take: a running VM is stopped for the copy, then started again (`keep_vm`).
 
@@ -54,5 +54,5 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 ```shell
 # By the template's name; the same led by `<node>/` for one on another node of the cluster.
 terraform import hyperlite_template.golden debian-golden
-terraform import hyperlite_template.golden pve-b/debian-golden
+terraform import hyperlite_template.golden node-b/debian-golden
 ```

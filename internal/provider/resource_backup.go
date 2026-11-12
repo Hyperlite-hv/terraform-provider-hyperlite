@@ -594,7 +594,7 @@ func (r *haResource) Metadata(_ context.Context, req resource.MetadataRequest, r
 func (r *haResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	resp.Schema = schema.Schema{
-		Description: "The HA protection of a VM, as vSphere's `vsphere_ha_vm_override`: Hyperlite keeps its definition to start it on another node when its own fails. Its disks must be on shared storage.",
+		Description: "The HA protection of a VM: Hyperlite keeps its definition to start it on another node when its own fails. Its disks must be on shared storage.",
 		Attributes: map[string]schema.Attribute{
 			"id":   schema.StringAttribute{Computed: true, PlanModifiers: keepID, Description: "The VM's name."},
 			"vm":   schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "The VM protected."},
