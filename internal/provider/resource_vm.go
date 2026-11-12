@@ -147,8 +147,8 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 				Optional: true, Computed: true, PlanModifiers: keep,
 				Description: "The member of the cluster the VM runs on: it is made there, and every change is done there " +
 					"(Hyperlite sends the request on). Absent: the node the provider talks to, and the node it is read on " +
-					"afterwards (HA may move it). A change **migrates** the VM, live, as vSphere moves a VM when its host " +
-					"changes: Hyperlite migrates running VMs only.",
+					"afterwards (HA may move it). A change **migrates** the VM, live: " +
+					"Hyperlite migrates running VMs only.",
 			},
 			"vcpu": schema.Int64Attribute{
 				Required: true, Validators: []validator.Int64{int64validator.AtLeast(1)},
@@ -237,7 +237,7 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"customize": schema.SingleNestedBlock{
-				Description: "The guest's customisation, written on its cloud-init drive as vSphere's `customize` and Proxmox VE's cloud-init options are: before its first boot, then at its next boot after a change.",
+				Description: "The guest's customisation, written on its cloud-init drive: before its first boot, then at its next boot after a change.",
 				Attributes: map[string]schema.Attribute{
 					"hostname":   schema.StringAttribute{Optional: true, Validators: []validator.String{hostLabel()}, Description: "Host name (the VM's name when absent)."},
 					"domain":     schema.StringAttribute{Optional: true, Validators: []validator.String{domainName()}, Description: "Domain, for the FQDN."},
@@ -352,7 +352,7 @@ func (r *vmResource) ValidateConfig(ctx context.Context, req resource.ValidateCo
 	}
 }
 
-// ModifyPlan refuses a disk that would shrink (Hyperlite grows disks only, as vSphere does), and marks what Hyperlite
+// ModifyPlan refuses a disk that would shrink (Hyperlite grows disks only), and marks what Hyperlite
 // gives a disk or an interface added (its device name, its pool, its MAC address) as known after the apply: the
 // framework leaves the computed attributes of a new element of a block null.
 func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
@@ -536,8 +536,8 @@ func (r *vmResource) configure(ctx context.Context, plan, prior *vmModel, fresh 
 	return nil
 }
 
-// migrate moves the VM to the member `to`, live (POST /vms/{name}/migrate on its member, a task followed there), as
-// vSphere moves a VM when its host changes. Hyperlite migrates a running VM only: a stopped one is refused, with the
+// migrate moves the VM to the member `to`, live (POST /vms/{name}/migrate on its member, a task followed there).
+// Hyperlite migrates a running VM only: a stopped one is refused, with the
 // reason.
 func (r *vmResource) migrate(ctx context.Context, m *vmModel, to string) error {
 	c := r.on(m)

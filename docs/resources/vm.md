@@ -17,7 +17,7 @@ data "hyperlite_template" "debian" {
   name = "debian-12-base"
 }
 
-# A VM deployed from a template, customised at its first boot, as vSphere's clone { customize }.
+# A VM deployed from a template, customised at its first boot.
 resource "hyperlite_vm" "web" {
   name      = "web-1"
   vcpu      = 2
@@ -90,14 +90,14 @@ output "web_address" {
 - `autostart` (Boolean) Started when its node starts.
 - `clone` (Block, Optional) Make the VM from a template or from another (stopped) VM, with a copy of its disks. Its system, account and firmware come from the source. (see [below for nested schema](#nestedblock--clone))
 - `cloud_init` (Block, Optional) The account of a VM made from a cloud image (Hyperlite's or a template's): applied before its first boot, then at its next boot after a change. (see [below for nested schema](#nestedblock--cloud_init))
-- `customize` (Block, Optional) The guest's customisation, written on its cloud-init drive as vSphere's `customize` and Proxmox VE's cloud-init options are: before its first boot, then at its next boot after a change. (see [below for nested schema](#nestedblock--customize))
+- `customize` (Block, Optional) The guest's customisation, written on its cloud-init drive: before its first boot, then at its next boot after a change. (see [below for nested schema](#nestedblock--customize))
 - `disk` (Block List) The VM's disks, in order: the first is its system disk. A disk grows in place (never shrinks); one added is created and attached; one removed is detached and deleted. (see [below for nested schema](#nestedblock--disk))
 - `firmware` (String) `bios`, `uefi` or `uefi_secure` (Secure Boot and TPM 2.0, what Windows 11 asks). A VM made from Hyperlite's cloud image or an ISO only; a clone keeps its source's.
 - `force_stop` (Boolean) Stop the VM hard when its clean shutdown did not end within `shutdown_timeout`.
 - `guest_os` (String) The system an ISO installs, for the devices it gets (`auto` reads it from the ISO's name).
 - `iso` (String) An installation ISO of the node's library: the VM gets a blank system disk and is installed from its console. Without `iso` nor `clone`, the VM is made from Hyperlite's cloud image (Debian 12) and needs `cloud_init`.
 - `network_interface` (Block List) The VM's interfaces, in order: at least one. A change of network keeps the interface's MAC address. (see [below for nested schema](#nestedblock--network_interface))
-- `node` (String) The member of the cluster the VM runs on: it is made there, and every change is done there (Hyperlite sends the request on). Absent: the node the provider talks to, and the node it is read on afterwards (HA may move it). A change **migrates** the VM, live, as vSphere moves a VM when its host changes: Hyperlite migrates running VMs only.
+- `node` (String) The member of the cluster the VM runs on: it is made there, and every change is done there (Hyperlite sends the request on). Absent: the node the provider talks to, and the node it is read on afterwards (HA may move it). A change **migrates** the VM, live: Hyperlite migrates running VMs only.
 - `notes` (String) Notes, as the dashboard shows them.
 - `resource_pool` (Number) The pool (its id) the VM is a member of: its assignments give rights on the VM. Required from an account that is not an administrator (vm.allocate on the pool).
 - `shutdown_timeout` (String) How long a clean shutdown may take before a change that needs the VM stopped, or its deletion.

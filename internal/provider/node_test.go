@@ -36,7 +36,7 @@ resource "hyperlite_vm_backup_schedule" "s" {
 
 data "hyperlite_iso" "debian" {
   name = "debian.iso"
-  node = "pve-b"
+  node = "node-b"
 }
 `
 }
@@ -45,8 +45,8 @@ data "hyperlite_iso" "debian" {
 // VM moved to another member is migrated, not made again; `local` and that node's own name are one node, so writing
 // one for the other moves nothing (Terraform still shows the new spelling: a configured value is planned as written).
 func TestEachObjectIsOnTheMemberItsNodeNames(t *testing.T) {
-	members, srv := newFakeCluster(t, "pve-b")
-	here, there := members["hv-a"], members["pve-b"]
+	members, srv := newFakeCluster(t, "node-b")
+	here, there := members["hv-a"], members["node-b"]
 	there.isos["debian.iso"] = []byte("ISO")
 	var uuid string
 	on := func(member *fakeHyperliteAPI, other *fakeHyperliteAPI) resource.TestCheckFunc {
@@ -70,16 +70,16 @@ func TestEachObjectIsOnTheMemberItsNodeNames(t *testing.T) {
 		ProtoV6ProviderFactories: factories,
 		Steps: []resource.TestStep{
 			{
-				Config: clusterConfig(srv.URL, "pve-b"),
+				Config: clusterConfig(srv.URL, "node-b"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					on(there, here),
-					resource.TestCheckResourceAttr("hyperlite_vm.web", "node", "pve-b"),
-					resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.s", "node", "pve-b"),
+					resource.TestCheckResourceAttr("hyperlite_vm.web", "node", "node-b"),
+					resource.TestCheckResourceAttr("hyperlite_vm_backup_schedule.s", "node", "node-b"),
 					resource.TestCheckResourceAttr("data.hyperlite_iso.debian", "id", "debian.iso"),
-					resource.TestCheckResourceAttr("data.hyperlite_iso.debian", "node", "pve-b"),
+					resource.TestCheckResourceAttr("data.hyperlite_iso.debian", "node", "node-b"),
 				),
 			},
-			{ResourceName: "hyperlite_vm_backup_schedule.s", ImportState: true, ImportStateId: "pve-b/web-1", ImportStateVerify: true},
+			{ResourceName: "hyperlite_vm_backup_schedule.s", ImportState: true, ImportStateId: "node-b/web-1", ImportStateVerify: true},
 			{
 				Config: clusterConfig(srv.URL, "hv-a"),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -93,9 +93,9 @@ func TestEachObjectIsOnTheMemberItsNodeNames(t *testing.T) {
 					on(here, there),
 					resource.TestCheckResourceAttr("hyperlite_vm.web", "node", "local"),
 					func(*terraform.State) error {
-						// One migration, the one sent to pve-b; none run on hv-a itself.
-						if n, sent := here.called("POST /vms/web-1/migrate"), here.called("POST /vms/web-1/migrate?node=pve-b"); n != 1 || sent != 1 {
-							return fmt.Errorf("%d migrations, %d of them sent to pve-b: 1 expected, sent to pve-b", n, sent)
+						// One migration, the one sent to node-b; none run on hv-a itself.
+						if n, sent := here.called("POST /vms/web-1/migrate"), here.called("POST /vms/web-1/migrate?node=node-b"); n != 1 || sent != 1 {
+							return fmt.Errorf("%d migrations, %d of them sent to node-b: 1 expected, sent to node-b", n, sent)
 						}
 						return nil
 					},
@@ -106,13 +106,13 @@ func TestEachObjectIsOnTheMemberItsNodeNames(t *testing.T) {
 }
 
 func TestANodeThatIsNoMemberIsNamed(t *testing.T) {
-	members, srv := newFakeCluster(t, "pve-b")
-	members["pve-b"].isos["debian.iso"] = []byte("ISO")
+	members, srv := newFakeCluster(t, "node-b")
+	members["node-b"].isos["debian.iso"] = []byte("ISO")
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: factories,
 		Steps: []resource.TestStep{{
-			Config:      clusterConfig(srv.URL, "pve-z"),
-			ExpectError: regexp.MustCompile(`pve-z is not a member`),
+			Config:      clusterConfig(srv.URL, "node-z"),
+			ExpectError: regexp.MustCompile(`node-z is not a member`),
 		}},
 	})
 }
@@ -124,7 +124,7 @@ func TestANodeIsRefusedByAHyperliteThatWouldActOnItself(t *testing.T) {
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: factories,
 		Steps: []resource.TestStep{{
-			Config:      clusterConfig(srv.URL, "pve-b"),
+			Config:      clusterConfig(srv.URL, "node-b"),
 			ExpectError: regexp.MustCompile(`needs Hyperlite 1.3 or later`),
 		}},
 	})
@@ -159,8 +159,8 @@ func TestEveryCallGoesThroughTheMembersClient(t *testing.T) {
 
 // An image is uploaded to the member `node` names, through the node the provider talks to, and renamed there.
 func TestAnImageIsUploadedToItsMember(t *testing.T) {
-	members, srv := newFakeCluster(t, "pve-b")
-	here, there := members["hv-a"], members["pve-b"]
+	members, srv := newFakeCluster(t, "node-b")
+	here, there := members["hv-a"], members["node-b"]
 	source := filepath.Join(t.TempDir(), "debian.iso")
 	if err := os.WriteFile(source, []byte("ISO image"), 0o600); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestAnImageIsUploadedToItsMember(t *testing.T) {
 		return providerBlock(srv.URL, "hlt_ok") + fmt.Sprintf(`
 resource "hyperlite_iso" "debian" {
   name   = %q
-  node   = "pve-b"
+  node   = "node-b"
   source = %q
 }
 `, name, source)
@@ -177,7 +177,7 @@ resource "hyperlite_iso" "debian" {
 	only := func(name string) resource.TestCheckFunc {
 		return func(*terraform.State) error {
 			if string(there.isos[name]) != "ISO image" || len(there.isos) != 1 || len(here.isos) != 0 {
-				return fmt.Errorf("%s is not on pve-b alone: pve-b has %d, hv-a %d", name, len(there.isos), len(here.isos))
+				return fmt.Errorf("%s is not on node-b alone: node-b has %d, hv-a %d", name, len(there.isos), len(here.isos))
 			}
 			return nil
 		}
@@ -186,9 +186,9 @@ resource "hyperlite_iso" "debian" {
 		ProtoV6ProviderFactories: factories,
 		Steps: []resource.TestStep{
 			{Config: config("debian.iso"), Check: resource.ComposeAggregateTestCheckFunc(only("debian.iso"),
-				resource.TestCheckResourceAttr("hyperlite_iso.debian", "node", "pve-b"))},
+				resource.TestCheckResourceAttr("hyperlite_iso.debian", "node", "node-b"))},
 			{
-				ResourceName: "hyperlite_iso.debian", ImportState: true, ImportStateId: "pve-b/debian.iso",
+				ResourceName: "hyperlite_iso.debian", ImportState: true, ImportStateId: "node-b/debian.iso",
 				ImportStateVerify: true, ImportStateVerifyIgnore: []string{"source"},
 			},
 			{Config: config("debian-13.iso"), Check: only("debian-13.iso")},
